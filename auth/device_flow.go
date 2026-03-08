@@ -71,7 +71,7 @@ func StartDeviceFlow() (*AuthSession, error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := config.NewHTTPClient(10 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("[DeviceFlow] Request to %s failed: %v", config.GithubDeviceURL, err)
@@ -171,7 +171,7 @@ func requestToken(deviceCode string) (string, error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := config.NewHTTPClient(10 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("[DeviceFlow] Token request HTTP error: %v", err)

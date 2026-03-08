@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react"
 
-import { api, getSessionToken, setSessionToken, type Account, type BatchUsageItem, type CopilotModel, type ModelMapping, type PoolConfig, type ProxyUsageSnapshot } from "./api"
+import { api, getSessionToken, setSessionToken, type Account, type BatchUsageItem, type CopilotModel, type ModelMapping, type PoolConfig, type ProxySettings, type ProxyUsageSnapshot } from "./api"
 import { AccountCard } from "./components/AccountCard"
 import { AddAccountForm } from "./components/AddAccountForm"
 import { useLocale, useT } from "./i18n"
@@ -126,6 +126,65 @@ const strategyDescMap: Record<string, "roundRobinDesc" | "priorityDesc" | "least
   priority: "priorityDesc",
   "least-used": "leastUsedDesc",
   smart: "smartDesc",
+}
+
+function ProxySettingsPanel({ settings, onChange }: { settings: ProxySettings; onChange: (s: ProxySettings) => void }) {
+  const [input, setInput] = useState(settings.proxyURL ?? "")
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const t = useT()
+
+  const save = async (url: string) => {
+    setSaving(true)
+    try {
+      const updated = await api.updateProxySettings({ proxyURL: url })
+      onChange(updated)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 1500)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleBlur = () => {
+    if (input !== settings.proxyURL) void save(input)
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") void save(input)
+  }
+
+  const handleClear = () => {
+    setInput("")
+    void save("")
+  }
+
+  return (
+    <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: 16, marginBottom: 16 }}>
+      <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>{t("proxySettings")}</div>
+      <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 10 }}>{t("proxySettingsDesc")}</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ fontSize: 13, color: "var(--text-muted)", flexShrink: 0 }}>{t("proxyUrlLabel")}</span>
+        <input
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onBlur={handleBlur}
+          onKeyDown={handleKeyDown}
+          placeholder={t("proxyUrlPlaceholder")}
+          style={{ flex: 1, fontSize: 13, padding: "4px 8px", fontFamily: "monospace" }}
+        />
+        {input && (
+          <button type="button" onClick={handleClear} disabled={saving} style={{ padding: "4px 10px", fontSize: 12 }}>
+            {t("proxyClear")}
+          </button>
+        )}
+        <button type="button" className="primary" onClick={() => void save(input)} disabled={saving} style={{ padding: "4px 10px", fontSize: 12, flexShrink: 0 }}>
+          {saved ? t("proxySaved") : saving ? t("saving") : t("save")}
+        </button>
+      </div>
+    </div>
+  )
 }
 
 function PoolSettings({ pool, proxyPort, onChange }: { pool: PoolConfig; proxyPort: number; onChange: (p: PoolConfig) => void }) {
@@ -549,6 +608,7 @@ function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [proxyPort, setProxyPort] = useState(4141)
   const [pool, setPool] = useState<PoolConfig>({ enabled: false, strategy: "round-robin" } as PoolConfig)
+  const [proxySettings, setProxySettings] = useState<ProxySettings>({ proxyURL: "" })
   const t = useT()
 
   const refresh = useCallback(async () => {
@@ -560,6 +620,7 @@ function Dashboard() {
   useEffect(() => {
     void api.getConfig().then((cfg) => setProxyPort(cfg.proxyPort))
     void api.getPool().then(setPool).catch(() => {})
+    void api.getProxySettings().then(setProxySettings).catch(() => {})
     void refresh()
     const interval = setInterval(() => void refresh(), 5000)
     return () => clearInterval(interval)
@@ -581,6 +642,7 @@ function Dashboard() {
           <button onClick={handleLogout}>{t("logout")}</button>
         </div>
       </header>
+      <ProxySettingsPanel settings={proxySettings} onChange={setProxySettings} />
       <PoolSettings pool={pool} proxyPort={proxyPort} onChange={setPool} />
       <BatchUsagePanel />
       <ProxyUsagePanel accounts={accounts} />

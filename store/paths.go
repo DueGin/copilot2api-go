@@ -31,11 +31,15 @@ func ModelMapFile() string {
 	return filepath.Join(AppDir, "model_map.json")
 }
 
+func ProxyConfigFile() string {
+	return filepath.Join(AppDir, "proxy-config.json")
+}
+
 func EnsurePaths() error {
 	if err := os.MkdirAll(AppDir, 0755); err != nil {
 		return err
 	}
-	files := []string{AccountsFile(), PoolConfigFile(), AdminFile(), ModelMapFile()}
+	files := []string{AccountsFile(), PoolConfigFile(), AdminFile(), ModelMapFile(), ProxyConfigFile()}
 	for _, f := range files {
 		if _, err := os.Stat(f); os.IsNotExist(err) {
 			if err := os.WriteFile(f, []byte("{}"), 0644); err != nil {

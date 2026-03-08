@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"copilot-go/auth"
 	"copilot-go/config"
@@ -85,6 +84,10 @@ func RegisterConsoleAPI(r *gin.Engine, proxyPort int) {
 
 	// Copilot models
 	protected.GET("/copilot-models", handleGetCopilotModels)
+
+	// Proxy config (outbound HTTP proxy)
+	protected.GET("/proxy-config", handleGetProxyConfig)
+	protected.PUT("/proxy-config", handleUpdateProxyConfig)
 
 	// Proxy usage stats (from in-memory tracking)
 	protected.GET("/usage", handleGetProxyUsage)
@@ -588,6 +591,32 @@ func findWebDist() string {
 	return ""
 }
 
+// --- Proxy config handlers ---
+
+func handleGetProxyConfig(c *gin.Context) {
+	cfg, err := store.GetProxyConfig()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, cfg)
+}
+
+func handleUpdateProxyConfig(c *gin.Context) {
+	var cfg store.ProxyConfig
+	if err := c.ShouldBindJSON(&cfg); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+	if err := store.UpdateProxyConfig(cfg); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	config.SetProxyURL(cfg.ProxyURL)
+	instance.RebuildHTTPClients()
+	c.JSON(http.StatusOK, cfg)
+}
+
 // --- Proxy usage handlers ---
 
 func handleGetProxyUsage(c *gin.Context) {
@@ -616,8 +645,7 @@ func fetchCopilotUsage(accountID string) (interface{}, error) {
 		req.Header[k] = v
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := instance.GetDefaultHTTPClient().Do(req)
 	if err != nil {
 		return nil, err
 	}

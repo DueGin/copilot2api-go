@@ -6,6 +6,7 @@ import (
 	"log"
 	"sync"
 
+	"copilot-go/config"
 	"copilot-go/handler"
 	"copilot-go/instance"
 	"copilot-go/store"
@@ -27,6 +28,13 @@ func main() {
 	// Ensure data directories exist
 	if err := store.EnsurePaths(); err != nil {
 		log.Fatalf("Failed to initialize data paths: %v", err)
+	}
+
+	// Load proxy config and apply to HTTP clients
+	if proxyCfg, err := store.GetProxyConfig(); err == nil && proxyCfg.ProxyURL != "" {
+		config.SetProxyURL(proxyCfg.ProxyURL)
+		instance.RebuildHTTPClients()
+		log.Printf("Using HTTP proxy: %s", proxyCfg.ProxyURL)
 	}
 
 	// Auto-start enabled accounts

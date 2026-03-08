@@ -135,6 +135,14 @@ const en = {
   displayIdPlaceholder: "e.g. gpt-4o-standard",
   displayNamePlaceholder: "optional display name",
 
+  // Proxy Settings
+  proxySettings: "Outbound Proxy",
+  proxySettingsDesc: "Route all outbound requests through an HTTP/HTTPS/SOCKS5 proxy",
+  proxyUrlLabel: "Proxy URL:",
+  proxyUrlPlaceholder: "http://host:port or socks5://host:port",
+  proxySaved: "Saved",
+  proxyClear: "Clear",
+
   // Copilot Models
   fetchModels: "Fetch Models",
   copilotModels: "Copilot Models",
@@ -279,6 +287,14 @@ const zh: Translations = {
   modelMappingPlaceholder: "例如 gpt-4o",
   displayIdPlaceholder: "例如 gpt-4o-standard",
   displayNamePlaceholder: "可选显示名称",
+
+  // Proxy Settings
+  proxySettings: "出站代理",
+  proxySettingsDesc: "将所有出站请求通过 HTTP/HTTPS/SOCKS5 代理转发",
+  proxyUrlLabel: "代理地址：",
+  proxyUrlPlaceholder: "http://host:port 或 socks5://host:port",
+  proxySaved: "已保存",
+  proxyClear: "清除",
 
   // Copilot Models
   fetchModels: "获取模型列表",

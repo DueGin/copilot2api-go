@@ -3,7 +3,9 @@ package config
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"sync"
+	"time"
 )
 
 const (
@@ -18,6 +20,40 @@ const (
 	GithubTokenURL   = "https://github.com/login/oauth/access_token"
 	GithubUserURL    = "https://api.github.com/user"
 )
+
+// proxyURL is the global outbound HTTP proxy. Protected by proxyMu.
+var (
+	proxyMu  sync.RWMutex
+	proxyURL string
+)
+
+func SetProxyURL(u string) {
+	proxyMu.Lock()
+	proxyURL = u
+	proxyMu.Unlock()
+}
+
+func GetProxyURL() string {
+	proxyMu.RLock()
+	u := proxyURL
+	proxyMu.RUnlock()
+	return u
+}
+
+// NewHTTPClient creates an HTTP client with the current proxy setting and given timeout.
+func NewHTTPClient(timeout time.Duration) *http.Client {
+	t := &http.Transport{
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+	if pURL := GetProxyURL(); pURL != "" {
+		if parsed, err := url.Parse(pURL); err == nil {
+			t.Proxy = http.ProxyURL(parsed)
+		}
+	}
+	return &http.Client{Timeout: timeout, Transport: t}
+}
 
 type ModelsResponse struct {
 	Object string       `json:"object"`

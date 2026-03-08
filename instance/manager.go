@@ -9,6 +9,8 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"net/url"
+	"sync"
 	"time"
 
 	"copilot-go/config"
@@ -171,7 +173,7 @@ func GetUser(accountID string) (*CopilotUser, error) {
 		req.Header[k] = v
 	}
 
-	resp, err := defaultHTTPClient.Do(req)
+	resp, err := getDefaultClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -251,7 +253,7 @@ func refreshCopilotToken(state *config.State) error {
 		req.Header[k] = v
 	}
 
-	resp, err := defaultHTTPClient.Do(req)
+	resp, err := getDefaultClient().Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to get copilot token: %w", err)
 	}
@@ -312,7 +314,7 @@ func fetchModels(state *config.State) error {
 		req.Header[k] = v
 	}
 
-	resp, err := defaultHTTPClient.Do(req)
+	resp, err := getDefaultClient().Do(req)
 	if err != nil {
 		return err
 	}
@@ -346,34 +348,76 @@ func fetchModels(state *config.State) error {
 	return nil
 }
 
-// streamingHTTPClient is a shared client for streaming requests.
-// It has NO overall timeout — streaming responses can last indefinitely.
-// Connection-level timeouts are handled by the transport.
-var streamingHTTPClient = &http.Client{
-	Transport: &http.Transport{
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   20,
-		ResponseHeaderTimeout: 2 * time.Minute, // max wait for first response header
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-	},
-	// No Timeout set — this is critical for streaming.
-	// http.Client.Timeout applies to the ENTIRE request lifecycle including
-	// reading the response body. For streaming SSE, the body is read over
-	// minutes/hours, so any finite timeout here will kill long conversations.
+var (
+	clientMu            sync.RWMutex
+	streamingHTTPClient *http.Client
+	defaultHTTPClient   *http.Client
+)
+
+func init() {
+	rebuildHTTPClients()
 }
 
-// defaultHTTPClient is a shared client for non-streaming requests (token refresh, models, etc.).
-var defaultHTTPClient = &http.Client{
-	Timeout: 15 * time.Second,
-	Transport: &http.Transport{
-		MaxIdleConns:          50,
-		MaxIdleConnsPerHost:   10,
+func buildTransport(streaming bool, proxyRawURL string) *http.Transport {
+	t := &http.Transport{
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
-	},
+	}
+	if streaming {
+		t.MaxIdleConns = 100
+		t.MaxIdleConnsPerHost = 20
+		t.ResponseHeaderTimeout = 2 * time.Minute
+	} else {
+		t.MaxIdleConns = 50
+		t.MaxIdleConnsPerHost = 10
+	}
+	if proxyRawURL != "" {
+		if parsed, err := url.Parse(proxyRawURL); err == nil {
+			t.Proxy = http.ProxyURL(parsed)
+		}
+	}
+	return t
+}
+
+func rebuildHTTPClients() {
+	pURL := config.GetProxyURL()
+	streaming := &http.Client{
+		// No Timeout set — streaming responses can last indefinitely.
+		Transport: buildTransport(true, pURL),
+	}
+	nonStreaming := &http.Client{
+		Timeout:   15 * time.Second,
+		Transport: buildTransport(false, pURL),
+	}
+	clientMu.Lock()
+	streamingHTTPClient = streaming
+	defaultHTTPClient = nonStreaming
+	clientMu.Unlock()
+}
+
+// RebuildHTTPClients rebuilds the shared HTTP clients using the current proxy setting.
+func RebuildHTTPClients() {
+	rebuildHTTPClients()
+}
+
+func getStreamingClient() *http.Client {
+	clientMu.RLock()
+	c := streamingHTTPClient
+	clientMu.RUnlock()
+	return c
+}
+
+func getDefaultClient() *http.Client {
+	clientMu.RLock()
+	c := defaultHTTPClient
+	clientMu.RUnlock()
+	return c
+}
+
+// GetDefaultHTTPClient returns the current default HTTP client for use by other packages.
+func GetDefaultHTTPClient() *http.Client {
+	return getDefaultClient()
 }
 
 func ProxyRequestWithBytes(state *config.State, method, path string, bodyBytes []byte, extraHeaders http.Header, hasVision bool) (*http.Response, error) {
@@ -399,5 +443,5 @@ func ProxyRequestWithBytesCtx(ctx context.Context, state *config.State, method, 
 		req.Header[k] = v
 	}
 
-	return streamingHTTPClient.Do(req)
+	return getStreamingClient().Do(req)
 }

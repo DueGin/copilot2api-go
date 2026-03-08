@@ -94,6 +94,10 @@ export interface ModelMapping {
   displayName?: string
 }
 
+export interface ProxySettings {
+  proxyURL: string
+}
+
 export interface CopilotModel {
   id: string
   ownedBy: string
@@ -213,6 +217,15 @@ export const api = {
 
   getCopilotModels: () =>
     request<{ models: Array<CopilotModel> }>("/copilot-models"),
+
+  // Outbound proxy settings
+  getProxySettings: () => request<ProxySettings>("/proxy-config"),
+
+  updateProxySettings: (data: ProxySettings) =>
+    request<ProxySettings>("/proxy-config", {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
 
   // Proxy usage stats (in-memory tracking)
   getProxyUsage: () =>
