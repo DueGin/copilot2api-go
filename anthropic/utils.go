@@ -1,6 +1,5 @@
 package anthropic
 
-// MapOpenAIStopReasonToAnthropic converts OpenAI finish_reason to Anthropic stop_reason.
 func MapOpenAIStopReasonToAnthropic(reason string) string {
 	switch reason {
 	case "stop":
@@ -14,4 +13,33 @@ func MapOpenAIStopReasonToAnthropic(reason string) string {
 	default:
 		return "end_turn"
 	}
+}
+
+func mapOpenAIStopReasonToAnthropicPtr(reason *string) *string {
+	if reason == nil {
+		return nil
+	}
+	mapped := MapOpenAIStopReasonToAnthropic(*reason)
+	return &mapped
+}
+
+func cachedPromptTokens(usage *OpenAIUsage) int {
+	if usage == nil || usage.PromptTokensDetails == nil {
+		return 0
+	}
+	return usage.PromptTokensDetails.CachedTokens
+}
+
+func promptInputTokens(usage *OpenAIUsage) int {
+	if usage == nil {
+		return 0
+	}
+	return usage.PromptTokens - cachedPromptTokens(usage)
+}
+
+func completionTokens(usage *OpenAIUsage) int {
+	if usage == nil {
+		return 0
+	}
+	return usage.CompletionTokens
 }

@@ -6,14 +6,16 @@ import (
 	"net/url"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 const (
 	CopilotVersion = "0.26.7"
 	GithubClientID = "Iv1.b507a08c87ecfe98"
+	APIVersion     = "2025-04-01"
 
-	CopilotChatURL         = "https://api.individual.githubcopilot.com"
-	CopilotBusinessChatURL = "https://api.business.githubcopilot.com"
+	CopilotChatURL = "https://api.githubcopilot.com"
 
 	GithubCopilotURL = "https://api.github.com/copilot_internal/v2/token"
 	GithubDeviceURL  = "https://github.com/login/device/code"
@@ -61,10 +63,44 @@ type ModelsResponse struct {
 }
 
 type ModelEntry struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	OwnedBy string `json:"owned_by"`
+	ID                 string            `json:"id"`
+	Object             string            `json:"object"`
+	Created            int64             `json:"created"`
+	OwnedBy            string            `json:"owned_by,omitempty"`
+	Capabilities       ModelCapabilities `json:"capabilities,omitempty"`
+	ModelPickerEnabled bool              `json:"model_picker_enabled,omitempty"`
+	Name               string            `json:"name,omitempty"`
+	Preview            bool              `json:"preview,omitempty"`
+	Vendor             string            `json:"vendor,omitempty"`
+	Version            string            `json:"version,omitempty"`
+	Policy             *ModelPolicy      `json:"policy,omitempty"`
+}
+
+type ModelCapabilities struct {
+	Family    string        `json:"family,omitempty"`
+	Limits    ModelLimits   `json:"limits,omitempty"`
+	Object    string        `json:"object,omitempty"`
+	Supports  ModelSupports `json:"supports,omitempty"`
+	Tokenizer string        `json:"tokenizer,omitempty"`
+	Type      string        `json:"type,omitempty"`
+}
+
+type ModelLimits struct {
+	MaxContextWindowTokens int `json:"max_context_window_tokens,omitempty"`
+	MaxOutputTokens        int `json:"max_output_tokens,omitempty"`
+	MaxPromptTokens        int `json:"max_prompt_tokens,omitempty"`
+	MaxInputs              int `json:"max_inputs,omitempty"`
+}
+
+type ModelSupports struct {
+	ToolCalls         bool `json:"tool_calls,omitempty"`
+	ParallelToolCalls bool `json:"parallel_tool_calls,omitempty"`
+	Dimensions        bool `json:"dimensions,omitempty"`
+}
+
+type ModelPolicy struct {
+	State string `json:"state,omitempty"`
+	Terms string `json:"terms,omitempty"`
 }
 
 type CopilotTokenResponse struct {
@@ -92,10 +128,10 @@ func (s *State) RLock()   { s.mu.RLock() }
 func (s *State) RUnlock() { s.mu.RUnlock() }
 
 func CopilotBaseURL(accountType string) string {
-	if accountType == "business" {
-		return CopilotBusinessChatURL
+	if accountType == "" || accountType == "individual" {
+		return CopilotChatURL
 	}
-	return CopilotChatURL
+	return fmt.Sprintf("https://api.%s.githubcopilot.com", accountType)
 }
 
 func CopilotHeaders(state *State, vision bool) http.Header {
@@ -105,14 +141,15 @@ func CopilotHeaders(state *State, vision bool) http.Header {
 	h := make(http.Header)
 	h.Set("Authorization", "Bearer "+state.CopilotToken)
 	h.Set("Content-Type", "application/json")
-	h.Set("Accept", "application/json")
 	h.Set("Copilot-Integration-Id", "vscode-chat")
 	h.Set("Editor-Version", "vscode/"+state.VSCodeVersion)
 	h.Set("Editor-Plugin-Version", "copilot-chat/"+CopilotVersion)
 	h.Set("User-Agent", fmt.Sprintf("GitHubCopilotChat/%s", CopilotVersion))
 	h.Set("Openai-Intent", "conversation-panel")
+	h.Set("X-Github-Api-Version", APIVersion)
+	h.Set("X-Request-Id", uuid.NewString())
+	h.Set("X-Vscode-User-Agent-Library-Version", "electron-fetch")
 	if vision {
-		h.Set("Copilot-Vision-Enabled", "true")
 		h.Set("Copilot-Vision-Request", "true")
 	}
 	return h
@@ -124,7 +161,10 @@ func GithubHeaders(state *State) http.Header {
 
 	h := make(http.Header)
 	h.Set("Authorization", "token "+state.GithubToken)
-	h.Set("Accept", "application/json")
+	h.Set("Editor-Version", "vscode/"+state.VSCodeVersion)
+	h.Set("Editor-Plugin-Version", "copilot-chat/"+CopilotVersion)
 	h.Set("User-Agent", fmt.Sprintf("GitHubCopilotChat/%s", CopilotVersion))
+	h.Set("X-Github-Api-Version", APIVersion)
+	h.Set("X-Vscode-User-Agent-Library-Version", "electron-fetch")
 	return h
 }

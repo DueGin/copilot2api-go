@@ -18,17 +18,17 @@ import (
 
 // DoCompletionsProxy performs the upstream request for completions and returns the raw response.
 // The caller is responsible for closing resp.Body.
-func DoCompletionsProxy(_ *gin.Context, state *config.State, bodyBytes []byte) (*http.Response, error) {
-	// Apply model mapping
-	var payload map[string]interface{}
-	if err := json.Unmarshal(bodyBytes, &payload); err == nil {
-		if model, ok := payload["model"].(string); ok {
-			payload["model"] = store.ToCopilotID(model)
-			bodyBytes, _ = json.Marshal(payload)
-		}
+func DoCompletionsProxy(c *gin.Context, state *config.State, bodyBytes []byte) (*http.Response, error) {
+	state.RLock()
+	models := state.Models
+	state.RUnlock()
+
+	rewrittenBody, extraHeaders, hasVision, err := rewriteCompletionsPayload(bodyBytes, models)
+	if err != nil {
+		return nil, err
 	}
 
-	return ProxyRequestWithBytes(state, "POST", "/chat/completions", bodyBytes, nil, false)
+	return ProxyRequestWithBytesCtx(c.Request.Context(), state, "POST", "/chat/completions", rewrittenBody, extraHeaders, hasVision)
 }
 
 // ForwardCompletionsResponse writes the upstream response to the client.
@@ -81,27 +81,37 @@ func ModelsHandler(c *gin.Context, state *config.State) {
 	state.RUnlock()
 
 	if models == nil {
-		c.JSON(http.StatusOK, config.ModelsResponse{
-			Object: "list",
-			Data:   []config.ModelEntry{},
-		})
+		c.JSON(http.StatusOK, config.ModelsResponse{Object: "list", Data: []config.ModelEntry{}})
 		return
 	}
 
-	mapped := config.ModelsResponse{
-		Object: models.Object,
-		Data:   make([]config.ModelEntry, len(models.Data)),
-	}
-	for i, m := range models.Data {
+	mapped := config.ModelsResponse{Object: models.Object, Data: make([]config.ModelEntry, len(models.Data))}
+	for i, model := range models.Data {
 		mapped.Data[i] = config.ModelEntry{
-			ID:      store.ToDisplayID(m.ID),
-			Object:  m.Object,
-			Created: m.Created,
-			OwnedBy: m.OwnedBy,
+			ID:                 store.ToDisplayID(model.ID),
+			Object:             model.Object,
+			Created:            model.Created,
+			OwnedBy:            firstNonEmpty(model.OwnedBy, model.Vendor),
+			Capabilities:       model.Capabilities,
+			ModelPickerEnabled: model.ModelPickerEnabled,
+			Name:               model.Name,
+			Preview:            model.Preview,
+			Vendor:             model.Vendor,
+			Version:            model.Version,
+			Policy:             model.Policy,
 		}
 	}
 
 	c.JSON(http.StatusOK, mapped)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // DoEmbeddingsProxy performs the upstream request for embeddings.
@@ -139,13 +149,12 @@ func DoMessagesProxy(c *gin.Context, state *config.State, bodyBytes []byte) (*ht
 
 	hasVision := checkVisionContent(anthropicPayload)
 	openaiPayload := anthropic.TranslateToOpenAI(anthropicPayload)
-
 	openaiBytes, err := json.Marshal(openaiPayload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %v", err)
 	}
-
-	return ProxyRequestWithBytesCtx(c.Request.Context(), state, "POST", "/chat/completions", openaiBytes, nil, hasVision)
+	extraHeaders := extraHeadersForMessages(openaiPayload.Messages)
+	return ProxyRequestWithBytesCtx(c.Request.Context(), state, "POST", "/chat/completions", openaiBytes, extraHeaders, hasVision)
 }
 
 // ForwardMessagesResponse writes the upstream response to the client in Anthropic format.
@@ -173,7 +182,7 @@ func handleAnthropicNonStream(c *gin.Context, resp *http.Response) {
 		return
 	}
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		c.Data(resp.StatusCode, "application/json", body)
 		return
 	}
@@ -184,12 +193,10 @@ func handleAnthropicNonStream(c *gin.Context, resp *http.Response) {
 		return
 	}
 
-	anthropicResp := anthropic.TranslateToAnthropic(openaiResp)
-	c.JSON(http.StatusOK, anthropicResp)
+	c.JSON(http.StatusOK, anthropic.TranslateToAnthropic(openaiResp))
 }
 
 func handleAnthropicStream(c *gin.Context, resp *http.Response) {
-	// If upstream returned an error, translate it properly instead of trying to SSE-parse
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		log.Printf("[Stream] Upstream returned status %d: %s", resp.StatusCode, string(body))
@@ -227,10 +234,6 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response) {
 
 		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
-			if err := writeSSE(w, "message_stop", map[string]string{"type": "message_stop"}); err != nil {
-				log.Printf("[Stream] Write error on message_stop: %v", err)
-				return
-			}
 			if hasFlusher {
 				flusher.Flush()
 			}
@@ -257,19 +260,16 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response) {
 
 	if err := scanner.Err(); err != nil {
 		log.Printf("[Stream] Scanner error: %v", err)
-		_ = writeSSE(w, "error", map[string]interface{}{
-			"type": "error",
-			"error": map[string]string{
-				"type":    "stream_error",
-				"message": fmt.Sprintf("upstream stream error: %v", err),
+		_ = writeSSE(w, "error", anthropic.ErrorEvent{
+			Type: "error",
+			Error: anthropic.ErrorData{
+				Type:    "stream_error",
+				Message: fmt.Sprintf("upstream stream error: %v", err),
 			},
 		})
-	} else {
-		log.Printf("[Stream] Upstream closed without [DONE], sending message_stop")
-		_ = writeSSE(w, "message_stop", map[string]string{"type": "message_stop"})
-	}
-	if hasFlusher {
-		flusher.Flush()
+		if hasFlusher {
+			flusher.Flush()
+		}
 	}
 }
 
@@ -282,8 +282,8 @@ func writeSSE(w io.Writer, event string, data interface{}) error {
 	return err
 }
 
-// CountTokensHandler provides a simplified token count estimation.
-func CountTokensHandler(c *gin.Context, _ *config.State) {
+// CountTokensHandler provides a target-compatible token count estimation.
+func CountTokensHandler(c *gin.Context, state *config.State) {
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read request body"})
@@ -296,31 +296,12 @@ func CountTokensHandler(c *gin.Context, _ *config.State) {
 		return
 	}
 
-	totalChars := 0
+	state.RLock()
+	models := state.Models
+	state.RUnlock()
 
-	if payload.System != nil {
-		sysData, _ := json.Marshal(payload.System)
-		totalChars += len(string(sysData))
-	}
-
-	for _, msg := range payload.Messages {
-		msgData, _ := json.Marshal(msg.Content)
-		totalChars += len(string(msgData))
-	}
-
-	if len(payload.Tools) > 0 {
-		toolData, _ := json.Marshal(payload.Tools)
-		totalChars += len(string(toolData))
-	}
-
-	inputTokens := totalChars / 4
-	if inputTokens < 1 {
-		inputTokens = 1
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"input_tokens": inputTokens,
-	})
+	inputTokens := calculateAnthropicTokenCountOrDefault(payload, c.GetHeader("anthropic-beta"), models)
+	c.JSON(http.StatusOK, gin.H{"input_tokens": inputTokens})
 }
 
 func checkVisionContent(payload anthropic.AnthropicMessagesPayload) bool {

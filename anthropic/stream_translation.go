@@ -1,17 +1,16 @@
 package anthropic
 
-import (
-	"encoding/json"
-	"fmt"
-	"time"
-)
+import "encoding/json"
 
 // jsonUnmarshal is a package-level alias to avoid import in translate_response.go
 var jsonUnmarshal = json.Unmarshal
 
 // TranslateChunkToAnthropicEvents converts an OpenAI stream chunk to Anthropic SSE events.
 func TranslateChunkToAnthropicEvents(chunk ChatCompletionResponse, state *AnthropicStreamState) []StreamEvent {
-	var events []StreamEvent
+	events := make([]StreamEvent, 0)
+	if len(chunk.Choices) == 0 {
+		return events
+	}
 
 	if chunk.Model != "" {
 		state.Model = chunk.Model
@@ -19,178 +18,171 @@ func TranslateChunkToAnthropicEvents(chunk ChatCompletionResponse, state *Anthro
 	if chunk.ID != "" {
 		state.ID = chunk.ID
 	}
+	if chunk.Usage != nil {
+		state.InputTokens = promptInputTokens(chunk.Usage)
+		state.OutputTokens = completionTokens(chunk.Usage)
+		state.CacheReadInputTokens = cachedPromptTokens(chunk.Usage)
+	}
 
-	// Send message_start on first chunk
+	choice := chunk.Choices[0]
+	delta := choice.Delta
+	if delta == nil {
+		delta = &ChoiceMsg{}
+	}
+
 	if !state.MessageStartSent {
-		state.MessageStartSent = true
-		id := state.ID
-		if id == "" {
-			id = fmt.Sprintf("msg_%d", time.Now().UnixNano())
-		}
 		events = append(events, StreamEvent{
 			Event: "message_start",
 			Data: MessageStartEvent{
 				Type: "message_start",
 				Message: AnthropicResponse{
-					ID:    id,
-					Type:  "message",
-					Role:  "assistant",
-					Model: state.Model,
-					Content: []AnthropicContentBlock{},
+					ID:           state.ID,
+					Type:         "message",
+					Role:         "assistant",
+					Content:      []AnthropicContentBlock{},
+					Model:        state.Model,
+					StopReason:   nil,
+					StopSequence: nil,
 					Usage: AnthropicUsage{
-						InputTokens:  state.InputTokens,
-						OutputTokens: 0,
+						InputTokens:          state.InputTokens,
+						OutputTokens:         0,
+						CacheReadInputTokens: state.CacheReadInputTokens,
 					},
 				},
 			},
 		})
+		state.MessageStartSent = true
+	}
+
+	if delta.Content != "" {
+		if isToolBlockOpen(state) {
+			events = append(events, stopContentBlock(state, true)...)
+		}
+		if !state.ContentBlockOpen {
+			events = append(events, StreamEvent{
+				Event: "content_block_start",
+				Data: ContentBlockStartEvent{
+					Type:  "content_block_start",
+					Index: state.ContentBlockIndex,
+					ContentBlock: StreamContentBlock{
+						Type: "text",
+						Text: emptyStringPtr(""),
+					},
+				},
+			})
+			state.ContentBlockOpen = true
+		}
 		events = append(events, StreamEvent{
-			Event: "ping",
-			Data:  PingEvent{Type: "ping"},
+			Event: "content_block_delta",
+			Data: ContentBlockDeltaEvent{
+				Type:  "content_block_delta",
+				Index: state.ContentBlockIndex,
+				Delta: DeltaBlock{Type: "text_delta", Text: delta.Content},
+			},
 		})
 	}
 
-	// Handle usage-only chunk (last chunk with usage info)
-	if chunk.Usage != nil {
-		state.InputTokens = chunk.Usage.PromptTokens
-		state.OutputTokens = chunk.Usage.CompletionTokens
-	}
-
-	for _, choice := range chunk.Choices {
-		delta := choice.Delta
-		if delta == nil {
-			// Check for finish_reason with no delta
-			if choice.FinishReason != nil {
-				events = append(events, closeContentBlock(state)...)
-				events = append(events, StreamEvent{
-					Event: "message_delta",
-					Data: MessageDeltaEvent{
-						Type: "message_delta",
-						Delta: MessageDelta{
-							StopReason: MapOpenAIStopReasonToAnthropic(*choice.FinishReason),
-						},
-						Usage: &DeltaUsage{
-							OutputTokens: state.OutputTokens,
-						},
-					},
-				})
+	if len(delta.ToolCalls) > 0 {
+		for _, toolCall := range delta.ToolCalls {
+			idx := 0
+			if toolCall.Index != nil {
+				idx = *toolCall.Index
 			}
-			continue
-		}
-
-		// Handle text content
-		if delta.Content != "" {
-			if !state.ContentBlockOpen || len(state.ToolCalls) > 0 {
-				// Need to open a new text block
-				events = append(events, closeContentBlock(state)...)
+			if toolCall.ID != "" && toolCall.Function.Name != "" {
+				if state.ContentBlockOpen {
+					events = append(events, stopContentBlock(state, true)...)
+				}
+				anthropicBlockIndex := state.ContentBlockIndex
+				state.ToolCalls[idx] = &ToolCallState{
+					ID:                  toolCall.ID,
+					Name:                toolCall.Function.Name,
+					AnthropicBlockIndex: anthropicBlockIndex,
+				}
 				events = append(events, StreamEvent{
 					Event: "content_block_start",
 					Data: ContentBlockStartEvent{
 						Type:  "content_block_start",
-						Index: state.ContentBlockIndex,
-						ContentBlock: AnthropicContentBlock{
-							Type: "text",
-							Text: "",
+						Index: anthropicBlockIndex,
+						ContentBlock: StreamContentBlock{
+							Type:  "tool_use",
+							ID:    toolCall.ID,
+							Name:  toolCall.Function.Name,
+							Input: map[string]interface{}{},
 						},
 					},
 				})
 				state.ContentBlockOpen = true
 			}
-			events = append(events, StreamEvent{
-				Event: "content_block_delta",
-				Data: ContentBlockDeltaEvent{
-					Type:  "content_block_delta",
-					Index: state.ContentBlockIndex,
-					Delta: DeltaBlock{
-						Type: "text_delta",
-						Text: delta.Content,
-					},
-				},
-			})
-		}
-
-		// Handle tool calls
-		if len(delta.ToolCalls) > 0 {
-			for _, tc := range delta.ToolCalls {
-				idx := 0
-				if tc.Index != nil {
-					idx = *tc.Index
-				}
-
-				if tc.ID != "" {
-					// New tool call starting
-					events = append(events, closeContentBlock(state)...)
-					state.ToolCalls[idx] = &ToolCallState{
-						ID:   tc.ID,
-						Name: tc.Function.Name,
-					}
-					events = append(events, StreamEvent{
-						Event: "content_block_start",
-						Data: ContentBlockStartEvent{
-							Type:  "content_block_start",
-							Index: state.ContentBlockIndex,
-							ContentBlock: AnthropicContentBlock{
-								Type: "tool_use",
-								ID:   tc.ID,
-								Name: tc.Function.Name,
-							},
-						},
-					})
-					state.ContentBlockOpen = true
-				}
-
-				if tc.Function.Arguments != "" {
-					if tcs, ok := state.ToolCalls[idx]; ok {
-						tcs.Arguments += tc.Function.Arguments
-					}
+			if toolCall.Function.Arguments != "" {
+				if toolCallInfo := state.ToolCalls[idx]; toolCallInfo != nil {
+					toolCallInfo.Arguments += toolCall.Function.Arguments
 					events = append(events, StreamEvent{
 						Event: "content_block_delta",
 						Data: ContentBlockDeltaEvent{
 							Type:  "content_block_delta",
-							Index: state.ContentBlockIndex,
-							Delta: DeltaBlock{
-								Type:        "input_json_delta",
-								PartialJSON: tc.Function.Arguments,
-							},
+							Index: toolCallInfo.AnthropicBlockIndex,
+							Delta: DeltaBlock{Type: "input_json_delta", PartialJSON: toolCall.Function.Arguments},
 						},
 					})
 				}
 			}
 		}
+	}
 
-		// Handle finish reason
-		if choice.FinishReason != nil {
-			events = append(events, closeContentBlock(state)...)
-			events = append(events, StreamEvent{
+	if choice.FinishReason != nil {
+		if state.ContentBlockOpen {
+			events = append(events, stopContentBlock(state, false)...)
+		}
+		events = append(events,
+			StreamEvent{
 				Event: "message_delta",
 				Data: MessageDeltaEvent{
 					Type: "message_delta",
 					Delta: MessageDelta{
-						StopReason: MapOpenAIStopReasonToAnthropic(*choice.FinishReason),
+						StopReason:   mapOpenAIStopReasonToAnthropicPtr(choice.FinishReason),
+						StopSequence: nil,
 					},
 					Usage: &DeltaUsage{
-						OutputTokens: state.OutputTokens,
+						InputTokens:          state.InputTokens,
+						OutputTokens:         state.OutputTokens,
+						CacheReadInputTokens: state.CacheReadInputTokens,
 					},
 				},
-			})
-		}
+			},
+			StreamEvent{Event: "message_stop", Data: map[string]string{"type": "message_stop"}},
+		)
 	}
 
 	return events
 }
 
-func closeContentBlock(state *AnthropicStreamState) []StreamEvent {
+func emptyStringPtr(s string) *string {
+	return &s
+}
+
+func isToolBlockOpen(state *AnthropicStreamState) bool {
+	for _, toolCall := range state.ToolCalls {
+		if toolCall != nil && toolCall.AnthropicBlockIndex == state.ContentBlockIndex {
+			return true
+		}
+	}
+	return false
+}
+
+func stopContentBlock(state *AnthropicStreamState, increment bool) []StreamEvent {
 	if !state.ContentBlockOpen {
 		return nil
 	}
+	index := state.ContentBlockIndex
 	state.ContentBlockOpen = false
-	event := StreamEvent{
+	if increment {
+		state.ContentBlockIndex++
+	}
+	return []StreamEvent{{
 		Event: "content_block_stop",
 		Data: ContentBlockStopEvent{
 			Type:  "content_block_stop",
-			Index: state.ContentBlockIndex,
+			Index: index,
 		},
-	}
-	state.ContentBlockIndex++
-	return []StreamEvent{event}
+	}}
 }
