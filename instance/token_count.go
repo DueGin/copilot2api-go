@@ -78,7 +78,7 @@ func findModelEntry(models *config.ModelsResponse, modelID string) *config.Model
 	if models == nil {
 		return nil
 	}
-	candidates := []string{modelID, normalizeModelID(modelID), store.ToCopilotID(modelID)}
+	candidates := []string{modelID, anthropic.NormalizeAnthropicModelName(modelID), store.ToCopilotID(modelID)}
 	for _, candidate := range candidates {
 		for i := range models.Data {
 			if models.Data[i].ID == candidate {
@@ -87,17 +87,6 @@ func findModelEntry(models *config.ModelsResponse, modelID string) *config.Model
 		}
 	}
 	return nil
-}
-
-func normalizeModelID(modelID string) string {
-	switch {
-	case strings.HasPrefix(modelID, "claude-sonnet-4-"):
-		return "claude-sonnet-4"
-	case strings.HasPrefix(modelID, "claude-opus-4-"):
-		return "claude-opus-4"
-	default:
-		return modelID
-	}
 }
 
 func getTokenCount(payload anthropic.ChatCompletionsPayload, model config.ModelEntry) (tokenCount, error) {
