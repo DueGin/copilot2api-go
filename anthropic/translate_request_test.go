@@ -1,6 +1,27 @@
 package anthropic
 
-import "testing"
+import (
+	"testing"
+
+	"copilot-go/store"
+)
+
+func useTempModelMappings(t *testing.T, mappings []store.ModelMapping) {
+	t.Helper()
+
+	prevAppDir := store.AppDir
+	store.AppDir = t.TempDir()
+	t.Cleanup(func() {
+		store.AppDir = prevAppDir
+	})
+
+	if err := store.EnsurePaths(); err != nil {
+		t.Fatalf("ensure paths: %v", err)
+	}
+	if err := store.SetModelMappings(mappings); err != nil {
+		t.Fatalf("set model mappings: %v", err)
+	}
+}
 
 func TestTranslateToOpenAI_NormalizesAnthropicModelAndMapsMetadata(t *testing.T) {
 	t.Parallel()
@@ -125,5 +146,59 @@ func TestTranslateToOpenAI_AssistantThinkingIsMergedWithTextAndToolCalls(t *test
 	}
 	if msg.ToolCalls[0].Function.Arguments != `{"city":"Paris"}` {
 		t.Fatalf("tool args = %q", msg.ToolCalls[0].Function.Arguments)
+	}
+}
+
+func TestTranslateToOpenAI_MapsCustomClaudeDisplayIDWithoutTruncating(t *testing.T) {
+	useTempModelMappings(t, []store.ModelMapping{{
+		CopilotID: "claude-sonnet-4.6",
+		DisplayID: "claude-sonnet-4-6",
+	}})
+
+	payload := AnthropicMessagesPayload{
+		Model:    "claude-sonnet-4-6",
+		Messages: []AnthropicMessage{{Role: "user", Content: "Hello!"}},
+	}
+
+	got := TranslateToOpenAI(payload)
+	if got.Model != "claude-sonnet-4.6" {
+		t.Fatalf("model = %q, want claude-sonnet-4.6", got.Model)
+	}
+}
+
+func TestTranslateToOpenAI_MapsCustomOpusDisplayIDWithoutTruncating(t *testing.T) {
+	useTempModelMappings(t, []store.ModelMapping{{
+		CopilotID: "claude-opus-4.6",
+		DisplayID: "claude-opus-4-6",
+	}})
+
+	payload := AnthropicMessagesPayload{
+		Model:    "claude-opus-4-6",
+		Messages: []AnthropicMessage{{Role: "user", Content: "Hello!"}},
+	}
+
+	got := TranslateToOpenAI(payload)
+	if got.Model != "claude-opus-4.6" {
+		t.Fatalf("model = %q, want claude-opus-4.6", got.Model)
+	}
+}
+
+func TestNormalizeAnthropicModelName_OnlyNormalizesEightDigitDates(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "sonnet date", input: "claude-sonnet-4-20250514", want: "claude-sonnet-4"},
+		{name: "opus date", input: "claude-opus-4-20250514", want: "claude-opus-4"},
+		{name: "sonnet custom display id", input: "claude-sonnet-4-6", want: "claude-sonnet-4-6"},
+		{name: "opus custom display id", input: "claude-opus-4-6", want: "claude-opus-4-6"},
+		{name: "non digit suffix", input: "claude-sonnet-4-preview", want: "claude-sonnet-4-preview"},
+	}
+
+	for _, tt := range tests {
+		if got := NormalizeAnthropicModelName(tt.input); got != tt.want {
+			t.Fatalf("%s: got %q, want %q", tt.name, got, tt.want)
+		}
 	}
 }
