@@ -2,6 +2,7 @@ import { useState } from "react"
 
 import { api, type Account, type UsageData } from "../api"
 import { useT } from "../i18n"
+import { CopyableSecret } from "./CopyableSecret"
 
 function StatusBadge({ status }: { status: string }) {
   const colorMap: Record<string, string> = {
@@ -123,16 +124,6 @@ function UsagePanel({ usage }: { usage: UsageData }) {
   )
 }
 
-function useCopyFeedback(): [string | null, (text: string) => void] {
-  const [copied, setCopied] = useState<string | null>(null)
-  const copy = (text: string) => {
-    void navigator.clipboard.writeText(text)
-    setCopied(text)
-    setTimeout(() => setCopied(null), 1500)
-  }
-  return [copied, copy]
-}
-
 function ApiKeyPanel({
   apiKey,
   onRegenerate,
@@ -141,11 +132,10 @@ function ApiKeyPanel({
   onRegenerate: () => void
 }) {
   const [visible, setVisible] = useState(false)
-  const [copied, copy] = useCopyFeedback()
   const t = useT()
   const safeKey = apiKey ?? ""
-  const masked = safeKey.length > 8 ? `${safeKey.slice(0, 8)}${"•".repeat(24)}` : safeKey
-  const isCopied = copied === safeKey
+  const masked =
+    safeKey.length > 8 ? `${safeKey.slice(0, 8)}${"•".repeat(24)}` : safeKey
 
   return (
     <div
@@ -161,20 +151,14 @@ function ApiKeyPanel({
         gap: 8,
       }}
     >
-      <span style={{ color: "var(--text-muted)", flexShrink: 0 }}>
-        {isCopied ? t("copied") : t("apiKey")}
-      </span>
-      <span
-        onClick={() => copy(safeKey)}
-        style={{
-          cursor: "pointer",
-          flex: 1,
-          color: isCopied ? "var(--green)" : undefined,
-        }}
-        title="Click to copy"
-      >
-        {visible ? safeKey : masked}
-      </span>
+      <CopyableSecret
+        idleLabel={t("apiKey")}
+        copiedLabel={t("copied")}
+        secret={safeKey}
+        maskedSecret={masked}
+        visible={visible}
+        copyTitle={t("clickToCopy")}
+      />
       <button
         type="button"
         onClick={() => setVisible(!visible)}

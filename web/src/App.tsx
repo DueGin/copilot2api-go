@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react"
 import { api, getSessionToken, setSessionToken, type Account, type BatchUsageItem, type CopilotModel, type ModelMapping, type PoolConfig, type ProxySettings, type ProxyUsageSnapshot } from "./api"
 import { AccountCard } from "./components/AccountCard"
 import { AddAccountForm } from "./components/AddAccountForm"
+import { CopyableSecret } from "./components/CopyableSecret"
 import { useLocale, useT } from "./i18n"
 
 type AuthState = "loading" | "setup" | "login" | "authed"
@@ -194,14 +195,12 @@ function ProxySettingsPanel({ settings, onChange }: { settings: ProxySettings; o
 function PoolSettings({ pool, proxyPort, onChange }: { pool: PoolConfig; proxyPort: number; onChange: (p: PoolConfig) => void }) {
   const [saving, setSaving] = useState(false)
   const [keyVisible, setKeyVisible] = useState(false)
-  const [copied, setCopied] = useState(false)
   const [rpmInput, setRpmInput] = useState(String(pool.rateLimitRPM ?? 0))
   const t = useT()
 
   const toggle = async () => { setSaving(true); try { const updated = await api.updatePool({ enabled: !pool.enabled }); onChange(updated) } finally { setSaving(false) } }
   const changeStrategy = async (strategy: PoolConfig["strategy"]) => { setSaving(true); try { const updated = await api.updatePool({ strategy }); onChange(updated) } finally { setSaving(false) } }
   const regenKey = async () => { setSaving(true); try { const updated = await api.regeneratePoolKey(); onChange(updated) } finally { setSaving(false) } }
-  const copyKey = () => { void navigator.clipboard.writeText(pool.apiKey); setCopied(true); setTimeout(() => setCopied(false), 1500) }
   const maskedKey = pool.apiKey?.length > 8 ? `${pool.apiKey.slice(0, 8)}${"•".repeat(24)}` : pool.apiKey ?? ""
   const proxyBase = `${window.location.protocol}//${window.location.hostname}:${proxyPort}`
 
@@ -251,8 +250,14 @@ function PoolSettings({ pool, proxyPort, onChange }: { pool: PoolConfig; proxyPo
             <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{t("rateLimitRPMDesc")}</span>
           </div>
           <div style={{ marginTop: 12, padding: 10, background: "var(--bg)", borderRadius: "var(--radius)", fontSize: 12, fontFamily: "monospace", display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ color: "var(--text-muted)", flexShrink: 0 }}>{copied ? t("copied") : t("poolKey")}</span>
-            <span onClick={copyKey} style={{ cursor: "pointer", flex: 1, color: copied ? "var(--green)" : undefined }} title="Click to copy">{keyVisible ? pool.apiKey : maskedKey}</span>
+            <CopyableSecret
+              idleLabel={t("poolKey")}
+              copiedLabel={t("copied")}
+              secret={pool.apiKey ?? ""}
+              maskedSecret={maskedKey}
+              visible={keyVisible}
+              copyTitle={t("clickToCopy")}
+            />
             <button type="button" onClick={() => setKeyVisible(!keyVisible)} style={{ padding: "2px 8px", fontSize: 11 }}>{keyVisible ? t("hide") : t("show")}</button>
             <button type="button" onClick={() => void regenKey()} disabled={saving} style={{ padding: "2px 8px", fontSize: 11 }}>{t("regen")}</button>
           </div>
