@@ -1,2 +1,10 @@
+# Frontend build output
 /web/dist/
-za
+/web/node_modules/
+
+# Local git worktrees
+/.worktrees/
+/worktrees/
+
+# OS metadata
+.DS_Store
