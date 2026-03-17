@@ -1,6 +1,7 @@
 import { useState } from "react"
 
 import { api, type Account, type UsageData } from "../api"
+import { useCopyFeedback } from "../clipboard"
 import { useT } from "../i18n"
 import { CopyableSecret } from "./CopyableSecret"
 
@@ -180,6 +181,7 @@ function ApiKeyPanel({
 interface Props {
   account: Account
   proxyPort: number
+  poolName?: string
   onRefresh: () => Promise<void>
 }
 
@@ -321,7 +323,7 @@ function EndpointsPanel({ apiKey, proxyPort }: { apiKey: string; proxyPort: numb
   )
 }
 
-export function AccountCard({ account, proxyPort, onRefresh }: Props) {
+export function AccountCard({ account, proxyPort, poolName, onRefresh }: Props) {
   const status = account.status ?? "stopped"
   const [usage, setUsage] = useState<UsageData | null>(null)
   const [usageLoading, setUsageLoading] = useState(false)
@@ -330,6 +332,8 @@ export function AccountCard({ account, proxyPort, onRefresh }: Props) {
   const [priorityValue, setPriorityValue] = useState(
     String(account.priority ?? 0),
   )
+  const [editingName, setEditingName] = useState(false)
+  const [nameValue, setNameValue] = useState(account.name)
   const t = useT()
 
   const handleToggleUsage = async () => {
@@ -382,6 +386,27 @@ export function AccountCard({ account, proxyPort, onRefresh }: Props) {
     }
   }
 
+  const handleNameSave = () => {
+    const trimmed = nameValue.trim()
+    if (!trimmed) {
+      setNameValue(account.name)
+      setEditingName(false)
+      return
+    }
+    setEditingName(false)
+    if (trimmed !== account.name) {
+      void (async () => {
+        try {
+          await api.updateAccount(account.id, { name: trimmed })
+          await onRefresh()
+        } catch (err) {
+          console.error("Name update failed:", err)
+          setNameValue(account.name)
+        }
+      })()
+    }
+  }
+
   return (
     <div
       style={{
@@ -408,13 +433,48 @@ export function AccountCard({ account, proxyPort, onRefresh }: Props) {
             }}
           >
             <span style={{ fontSize: 16, fontWeight: 600 }}>
-              {account.name}
+              {editingName ? (
+                <input
+                  type="text"
+                  value={nameValue}
+                  onChange={(e) => setNameValue(e.target.value)}
+                  onBlur={handleNameSave}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleNameSave()
+                    if (e.key === "Escape") {
+                      setNameValue(account.name)
+                      setEditingName(false)
+                    }
+                  }}
+                  autoFocus
+                  style={{
+                    fontSize: 16,
+                    fontWeight: 600,
+                    padding: "1px 6px",
+                    width: 200,
+                    display: "inline-block",
+                  }}
+                />
+              ) : (
+                <span
+                  onClick={() => { setNameValue(account.name); setEditingName(true) }}
+                  style={{ cursor: "pointer" }}
+                  title={t("editName")}
+                >
+                  {account.name}
+                </span>
+              )}
             </span>
             <StatusBadge status={status} />
           </div>
           <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
             {account.user?.login ? `@${account.user.login} · ` : ""}
             {account.accountType}
+            {poolName && (
+              <span style={{ marginLeft: 8, padding: "1px 6px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 4, fontSize: 11 }}>
+                {t("belongsToPool")} {poolName}
+              </span>
+            )}
           </div>
           {account.error && (
             <div style={{ fontSize: 12, color: "var(--red)", marginTop: 4 }}>

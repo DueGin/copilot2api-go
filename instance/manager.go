@@ -352,9 +352,16 @@ var (
 	clientMu            sync.RWMutex
 	streamingHTTPClient *http.Client
 	defaultHTTPClient   *http.Client
+
+	// Per-pool HTTP clients (keyed by pool ID).
+	poolClientMu       sync.RWMutex
+	poolStreamClients  map[string]*http.Client
+	poolDefaultClients map[string]*http.Client
 )
 
 func init() {
+	poolStreamClients = make(map[string]*http.Client)
+	poolDefaultClients = make(map[string]*http.Client)
 	rebuildHTTPClients()
 }
 
@@ -420,11 +427,64 @@ func GetDefaultHTTPClient() *http.Client {
 	return getDefaultClient()
 }
 
-func ProxyRequestWithBytes(state *config.State, method, path string, bodyBytes []byte, extraHeaders http.Header, hasVision bool) (*http.Response, error) {
-	return ProxyRequestWithBytesCtx(context.Background(), state, method, path, bodyBytes, extraHeaders, hasVision)
+// BuildPoolClients creates dedicated HTTP clients for a pool with the given proxy URL.
+func BuildPoolClients(poolID, proxyURL string) {
+	if proxyURL == "" {
+		// No dedicated proxy — pool will fall back to global clients.
+		RemovePoolClients(poolID)
+		return
+	}
+	streaming := &http.Client{
+		Transport: buildTransport(true, proxyURL),
+	}
+	nonStreaming := &http.Client{
+		Timeout:   15 * time.Second,
+		Transport: buildTransport(false, proxyURL),
+	}
+	poolClientMu.Lock()
+	poolStreamClients[poolID] = streaming
+	poolDefaultClients[poolID] = nonStreaming
+	poolClientMu.Unlock()
 }
 
-func ProxyRequestWithBytesCtx(ctx context.Context, state *config.State, method, path string, bodyBytes []byte, extraHeaders http.Header, hasVision bool) (*http.Response, error) {
+// RemovePoolClients removes the dedicated HTTP clients for a pool.
+func RemovePoolClients(poolID string) {
+	poolClientMu.Lock()
+	delete(poolStreamClients, poolID)
+	delete(poolDefaultClients, poolID)
+	poolClientMu.Unlock()
+}
+
+// RebuildPoolClients rebuilds HTTP clients for a pool (e.g. when proxy URL changes).
+func RebuildPoolClients(poolID, proxyURL string) {
+	BuildPoolClients(poolID, proxyURL)
+}
+
+func getPoolStreamingClient(poolID string) *http.Client {
+	if poolID == "" {
+		return nil
+	}
+	poolClientMu.RLock()
+	c := poolStreamClients[poolID]
+	poolClientMu.RUnlock()
+	return c
+}
+
+func getPoolDefaultClient(poolID string) *http.Client {
+	if poolID == "" {
+		return nil
+	}
+	poolClientMu.RLock()
+	c := poolDefaultClients[poolID]
+	poolClientMu.RUnlock()
+	return c
+}
+
+func ProxyRequestWithBytes(state *config.State, method, path string, bodyBytes []byte, extraHeaders http.Header, hasVision bool, poolID string) (*http.Response, error) {
+	return ProxyRequestWithBytesCtx(context.Background(), state, method, path, bodyBytes, extraHeaders, hasVision, poolID)
+}
+
+func ProxyRequestWithBytesCtx(ctx context.Context, state *config.State, method, path string, bodyBytes []byte, extraHeaders http.Header, hasVision bool, poolID string) (*http.Response, error) {
 	state.RLock()
 	baseURL := config.CopilotBaseURL(state.AccountType)
 	state.RUnlock()
@@ -443,5 +503,10 @@ func ProxyRequestWithBytesCtx(ctx context.Context, state *config.State, method, 
 		req.Header[k] = v
 	}
 
-	return getStreamingClient().Do(req)
+	// Use pool-specific client if available, else fall back to global.
+	client := getPoolStreamingClient(poolID)
+	if client == nil {
+		client = getStreamingClient()
+	}
+	return client.Do(req)
 }

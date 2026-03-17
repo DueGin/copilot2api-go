@@ -19,9 +19,13 @@ func RegisterProxy(r *gin.Engine) {
 	// Initialize rate limiter from environment.
 	instance.InitRateLimiter()
 
-	// Load per-account rate limit from pool config.
-	if poolCfg, err := store.GetPoolConfig(); err == nil && poolCfg != nil {
-		instance.SetPerAccountRPM(poolCfg.RateLimitRPM)
+	// Load per-pool rate limits.
+	if pools, err := store.GetPools(); err == nil {
+		for _, p := range pools {
+			if p.RateLimitRPM > 0 {
+				instance.SetPoolRPM(p.ID, p.RateLimitRPM)
+			}
+		}
 	}
 
 	r.Use(proxyAuth())
@@ -57,13 +61,17 @@ func proxyAuth() gin.HandlerFunc {
 
 		token := strings.TrimPrefix(authHeader, "Bearer ")
 
-		// Check pool API key first
-		poolCfg, _ := store.GetPoolConfig()
-		if poolCfg != nil && poolCfg.Enabled && poolCfg.ApiKey == token {
-			c.Set("isPool", true)
-			c.Set("poolStrategy", poolCfg.Strategy)
-			c.Next()
-			return
+		// Check multi-pool API keys first.
+		pools, _ := store.GetPools()
+		for _, pool := range pools {
+			if pool.Enabled && pool.ApiKey == token {
+				c.Set("isPool", true)
+				c.Set("poolID", pool.ID)
+				c.Set("poolStrategy", pool.Strategy)
+				c.Set("poolAccountIDs", pool.AccountIDs)
+				c.Next()
+				return
+			}
 		}
 
 		// Check individual account API key
@@ -83,6 +91,7 @@ func proxyAuth() gin.HandlerFunc {
 type resolvedAccount struct {
 	State     *config.State
 	AccountID string
+	PoolID    string
 }
 
 func resolveState(c *gin.Context, exclude map[string]bool) *resolvedAccount {
@@ -92,7 +101,16 @@ func resolveState(c *gin.Context, exclude map[string]bool) *resolvedAccount {
 		if s, ok := c.Get("poolStrategy"); ok {
 			strategy = s.(string)
 		}
-		account, err := instance.SelectAccount(strategy, exclude)
+		poolID := ""
+		if pid, ok := c.Get("poolID"); ok {
+			poolID = pid.(string)
+		}
+		var accountIDs []string
+		if aids, ok := c.Get("poolAccountIDs"); ok {
+			accountIDs = aids.([]string)
+		}
+
+		account, err := instance.SelectAccount(strategy, exclude, accountIDs)
 		if err != nil || account == nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "no available accounts in pool"})
 			return nil
@@ -102,7 +120,7 @@ func resolveState(c *gin.Context, exclude map[string]bool) *resolvedAccount {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "selected account instance not running"})
 			return nil
 		}
-		return &resolvedAccount{State: state, AccountID: account.ID}
+		return &resolvedAccount{State: state, AccountID: account.ID, PoolID: poolID}
 	}
 
 	accountID, exists := c.Get("accountID")
@@ -126,8 +144,8 @@ func isRetryableStatus(statusCode int) bool {
 
 // checkRateLimit checks the rate limit for the account and writes a 429 response if exceeded.
 // Returns true if the request is allowed, false if rate limited.
-func checkRateLimit(c *gin.Context, accountID string) bool {
-	allowed, retryAfter := instance.CheckRateLimit(accountID)
+func checkRateLimit(c *gin.Context, accountID, poolID string) bool {
+	allowed, retryAfter := instance.CheckRateLimitForPool(accountID, poolID)
 	if !allowed {
 		c.Header("Retry-After", fmt.Sprintf("%.0f", retryAfter))
 		c.JSON(http.StatusTooManyRequests, gin.H{
@@ -164,14 +182,14 @@ func proxyCompletions(c *gin.Context) {
 		}
 
 		// Check rate limit.
-		if !checkRateLimit(c, resolved.AccountID) {
+		if !checkRateLimit(c, resolved.AccountID, resolved.PoolID) {
 			return
 		}
 
 		// Record the request.
 		instance.RecordRequest(resolved.AccountID, false, false)
 
-		resp, proxyErr := instance.DoCompletionsProxy(c, resolved.State, bodyBytes)
+		resp, proxyErr := instance.DoCompletionsProxy(c, resolved.State, bodyBytes, resolved.PoolID)
 		if proxyErr != nil {
 			if resp != nil {
 				_ = resp.Body.Close()
@@ -230,13 +248,13 @@ func proxyEmbeddings(c *gin.Context) {
 			return
 		}
 
-		if !checkRateLimit(c, resolved.AccountID) {
+		if !checkRateLimit(c, resolved.AccountID, resolved.PoolID) {
 			return
 		}
 
 		instance.RecordRequest(resolved.AccountID, false, false)
 
-		resp, proxyErr := instance.DoEmbeddingsProxy(resolved.State, bodyBytes)
+		resp, proxyErr := instance.DoEmbeddingsProxy(resolved.State, bodyBytes, resolved.PoolID)
 		if proxyErr != nil {
 			if resp != nil {
 				_ = resp.Body.Close()
@@ -285,13 +303,13 @@ func proxyMessages(c *gin.Context) {
 			return
 		}
 
-		if !checkRateLimit(c, resolved.AccountID) {
+		if !checkRateLimit(c, resolved.AccountID, resolved.PoolID) {
 			return
 		}
 
 		instance.RecordRequest(resolved.AccountID, false, false)
 
-		resp, proxyErr := instance.DoMessagesProxy(c, resolved.State, bodyBytes)
+		resp, proxyErr := instance.DoMessagesProxy(c, resolved.State, bodyBytes, resolved.PoolID)
 		if proxyErr != nil {
 			if resp != nil {
 				_ = resp.Body.Close()

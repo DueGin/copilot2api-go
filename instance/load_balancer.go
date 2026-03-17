@@ -13,16 +13,37 @@ var rrIndex atomic.Int64
 
 // SelectAccount picks an account using the specified strategy.
 // exclude contains account IDs to skip (e.g., on retry).
-func SelectAccount(strategy string, exclude map[string]bool) (*store.Account, error) {
-	accounts, err := store.GetEnabledAccounts()
-	if err != nil {
-		return nil, err
+// accountIDs, if non-empty, restricts selection to those accounts only (pool mode).
+func SelectAccount(strategy string, exclude map[string]bool, accountIDs []string) (*store.Account, error) {
+	var candidates []store.Account
+	var err error
+
+	if len(accountIDs) > 0 {
+		// Pool mode: only consider accounts in the pool.
+		allAccounts, e := store.GetAccounts()
+		if e != nil {
+			return nil, e
+		}
+		idSet := make(map[string]bool, len(accountIDs))
+		for _, id := range accountIDs {
+			idSet[id] = true
+		}
+		for _, a := range allAccounts {
+			if a.Enabled && idSet[a.ID] {
+				candidates = append(candidates, a)
+			}
+		}
+	} else {
+		candidates, err = store.GetEnabledAccounts()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Filter out excluded and non-running accounts
 	var available []store.Account
 	mu.RLock()
-	for _, a := range accounts {
+	for _, a := range candidates {
 		if exclude != nil && exclude[a.ID] {
 			continue
 		}

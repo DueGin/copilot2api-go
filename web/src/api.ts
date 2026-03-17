@@ -49,12 +49,20 @@ interface QuotaDetail {
   unlimited?: boolean
 }
 
-export interface PoolConfig {
-  enabled: boolean
-  strategy: "round-robin" | "priority" | "least-used" | "smart"
+export interface Pool {
+  id: string
+  name: string
   apiKey: string
+  strategy: "round-robin" | "priority" | "least-used" | "smart"
   rateLimitRPM?: number
+  proxyURL?: string
+  accountIds: string[]
+  enabled: boolean
+  createdAt: string
 }
+
+// Legacy alias kept for i18n strategy keys
+export type PoolConfig = Pool
 
 export interface ProxyUsageSnapshot {
   totalRequests: number
@@ -183,16 +191,37 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  getPool: () => request<PoolConfig>("/pool"),
+  // Multi-pool API
+  getPools: () => request<Array<Pool>>("/pools"),
 
-  updatePool: (data: Partial<PoolConfig>) =>
-    request<PoolConfig>("/pool", {
+  createPool: (data: { name: string; strategy: string; proxyURL?: string }) =>
+    request<Pool>("/pools", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  updatePool: (id: string, data: Record<string, unknown>) =>
+    request<Pool>(`/pools/${id}`, {
       method: "PUT",
       body: JSON.stringify(data),
     }),
 
-  regeneratePoolKey: () =>
-    request<PoolConfig>("/pool/regenerate-key", { method: "POST" }),
+  deletePool: (id: string) =>
+    request<{ success: boolean }>(`/pools/${id}`, { method: "DELETE" }),
+
+  regeneratePoolKey: (id: string) =>
+    request<Pool>(`/pools/${id}/regenerate-key`, { method: "POST" }),
+
+  addAccountToPool: (poolId: string, accountId: string) =>
+    request<Pool>(`/pools/${poolId}/accounts`, {
+      method: "POST",
+      body: JSON.stringify({ accountId }),
+    }),
+
+  removeAccountFromPool: (poolId: string, accountId: string) =>
+    request<Pool>(`/pools/${poolId}/accounts/${accountId}`, {
+      method: "DELETE",
+    }),
 
   // Model mapping API
   getModelMappings: () =>

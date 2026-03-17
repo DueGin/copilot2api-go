@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react"
 
-import { api, getSessionToken, setSessionToken, type Account, type BatchUsageItem, type CopilotModel, type ModelMapping, type PoolConfig, type ProxySettings, type ProxyUsageSnapshot } from "./api"
+import { api, getSessionToken, setSessionToken, type Account, type BatchUsageItem, type CopilotModel, type ModelMapping, type Pool, type ProxySettings, type ProxyUsageSnapshot } from "./api"
 import { AccountCard } from "./components/AccountCard"
 import { AddAccountForm } from "./components/AddAccountForm"
 import { CopyableSecret } from "./components/CopyableSecret"
@@ -96,8 +96,17 @@ function LoginForm({ onLogin }: { onLogin: () => void }) {
   )
 }
 
-function AccountList({ accounts, proxyPort, onRefresh }: { accounts: Array<Account>; proxyPort: number; onRefresh: () => Promise<void> }) {
+function AccountList({ accounts, proxyPort, pools, onRefresh }: { accounts: Array<Account>; proxyPort: number; pools: Array<Pool>; onRefresh: () => Promise<void> }) {
   const t = useT()
+
+  // Build account -> pool name lookup
+  const accountPoolMap: Record<string, string> = {}
+  for (const pool of pools) {
+    for (const aid of pool.accountIds ?? []) {
+      accountPoolMap[aid] = pool.name
+    }
+  }
+
   if (accounts.length === 0) {
     return (
       <div style={{ textAlign: "center", padding: 60, color: "var(--text-muted)", border: "1px dashed var(--border)", borderRadius: "var(--radius)" }}>
@@ -109,7 +118,7 @@ function AccountList({ accounts, proxyPort, onRefresh }: { accounts: Array<Accou
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       {accounts.map((account) => (
-        <AccountCard key={account.id} account={account} proxyPort={proxyPort} onRefresh={onRefresh} />
+        <AccountCard key={account.id} account={account} proxyPort={proxyPort} poolName={accountPoolMap[account.id]} onRefresh={onRefresh} />
       ))}
     </div>
   )
@@ -192,80 +201,275 @@ function ProxySettingsPanel({ settings, onChange }: { settings: ProxySettings; o
   )
 }
 
-function PoolSettings({ pool, proxyPort, onChange }: { pool: PoolConfig; proxyPort: number; onChange: (p: PoolConfig) => void }) {
+function PoolCard({ pool, accounts, proxyPort, onUpdate }: { pool: Pool; accounts: Array<Account>; proxyPort: number; onUpdate: () => void }) {
   const [saving, setSaving] = useState(false)
   const [keyVisible, setKeyVisible] = useState(false)
   const [rpmInput, setRpmInput] = useState(String(pool.rateLimitRPM ?? 0))
+  const [editingName, setEditingName] = useState(false)
+  const [nameValue, setNameValue] = useState(pool.name)
+  const [editingStrategy, setEditingStrategy] = useState(false)
+  const [editingProxy, setEditingProxy] = useState(false)
+  const [proxyInput, setProxyInput] = useState(pool.proxyURL ?? "")
+  const [confirmDelete, setConfirmDelete] = useState(false)
   const t = useT()
 
-  const toggle = async () => { setSaving(true); try { const updated = await api.updatePool({ enabled: !pool.enabled }); onChange(updated) } finally { setSaving(false) } }
-  const changeStrategy = async (strategy: PoolConfig["strategy"]) => { setSaving(true); try { const updated = await api.updatePool({ strategy }); onChange(updated) } finally { setSaving(false) } }
-  const regenKey = async () => { setSaving(true); try { const updated = await api.regeneratePoolKey(); onChange(updated) } finally { setSaving(false) } }
   const maskedKey = pool.apiKey?.length > 8 ? `${pool.apiKey.slice(0, 8)}${"•".repeat(24)}` : pool.apiKey ?? ""
   const proxyBase = `${window.location.protocol}//${window.location.hostname}:${proxyPort}`
+
+  const poolAccountIds = new Set(pool.accountIds ?? [])
+  const poolAccounts = accounts.filter(a => poolAccountIds.has(a.id))
+  const availableAccounts = accounts.filter(a => !poolAccountIds.has(a.id))
+
+  const toggle = async () => { setSaving(true); try { await api.updatePool(pool.id, { enabled: !pool.enabled }); onUpdate() } finally { setSaving(false) } }
+  const changeStrategy = async (strategy: string) => { setSaving(true); try { await api.updatePool(pool.id, { strategy }); onUpdate(); setEditingStrategy(false) } finally { setSaving(false) } }
+  const regenKey = async () => { setSaving(true); try { await api.regeneratePoolKey(pool.id); onUpdate() } finally { setSaving(false) } }
 
   const saveRPM = async () => {
     const num = parseInt(rpmInput, 10)
     if (isNaN(num) || num < 0) { setRpmInput(String(pool.rateLimitRPM ?? 0)); return }
     if (num !== (pool.rateLimitRPM ?? 0)) {
       setSaving(true)
-      try { const updated = await api.updatePool({ rateLimitRPM: num }); onChange(updated); setRpmInput(String(updated.rateLimitRPM ?? 0)) }
+      try { await api.updatePool(pool.id, { rateLimitRPM: num }); onUpdate() }
       finally { setSaving(false) }
     }
   }
 
+  const handleNameSave = async () => {
+    const trimmed = nameValue.trim()
+    if (!trimmed) { setNameValue(pool.name); setEditingName(false); return }
+    setEditingName(false)
+    if (trimmed !== pool.name) {
+      setSaving(true)
+      try { await api.updatePool(pool.id, { name: trimmed }); onUpdate() }
+      finally { setSaving(false) }
+    }
+  }
+
+  const handleProxySave = async () => {
+    setEditingProxy(false)
+    if (proxyInput !== (pool.proxyURL ?? "")) {
+      setSaving(true)
+      try { await api.updatePool(pool.id, { proxyURL: proxyInput }); onUpdate() }
+      finally { setSaving(false) }
+    }
+  }
+
+  const addAccount = async (accountId: string) => {
+    setSaving(true)
+    try { await api.addAccountToPool(pool.id, accountId); onUpdate() }
+    catch (err) { console.error("Add account to pool failed:", err) }
+    finally { setSaving(false) }
+  }
+
+  const removeAccount = async (accountId: string) => {
+    setSaving(true)
+    try { await api.removeAccountFromPool(pool.id, accountId); onUpdate() }
+    finally { setSaving(false) }
+  }
+
+  const handleDelete = async () => {
+    if (!confirmDelete) { setConfirmDelete(true); setTimeout(() => setConfirmDelete(false), 3000); return }
+    setSaving(true)
+    try { await api.deletePool(pool.id); onUpdate() }
+    finally { setSaving(false); setConfirmDelete(false) }
+  }
+
   return (
-    <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: 16, marginBottom: 16 }}>
+    <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: 16, marginBottom: 12 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div>
-          <div style={{ fontSize: 15, fontWeight: 600 }}>{t("poolMode")}</div>
-          <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{pool.enabled ? t("poolEnabledDesc") : t("poolDisabledDesc")}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {editingName ? (
+            <input
+              type="text" value={nameValue} onChange={(e) => setNameValue(e.target.value)}
+              onBlur={() => void handleNameSave()}
+              onKeyDown={(e) => { if (e.key === "Enter") void handleNameSave(); if (e.key === "Escape") { setNameValue(pool.name); setEditingName(false) } }}
+              autoFocus style={{ fontSize: 15, fontWeight: 600, padding: "2px 6px", width: 200 }}
+            />
+          ) : (
+            <span style={{ fontSize: 15, fontWeight: 600, cursor: "pointer" }} onClick={() => { setNameValue(pool.name); setEditingName(true) }} title={t("editName")}>
+              {pool.name}
+            </span>
+          )}
+          <span style={{ fontSize: 12, padding: "2px 8px", borderRadius: 4, background: pool.enabled ? "var(--green)" : "var(--border)", color: pool.enabled ? "#fff" : "var(--text-muted)" }}>
+            {pool.enabled ? t("enable") : t("disable")}
+          </span>
         </div>
-        <button className={pool.enabled ? undefined : "primary"} onClick={() => void toggle()} disabled={saving} style={{ flexShrink: 0 }}>{pool.enabled ? t("disable") : t("enable")}</button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={() => void toggle()} disabled={saving} style={{ fontSize: 12 }}>{pool.enabled ? t("disable") : t("enable")}</button>
+          <button className="danger" onClick={() => void handleDelete()} disabled={saving} style={{ fontSize: 12 }}>{confirmDelete ? t("confirmDeletePool") : t("delete")}</button>
+        </div>
       </div>
+
       {pool.enabled && (
         <>
-          <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {strategyKeys.map((s) => (
-              <button key={s} className={pool.strategy === s ? "primary" : undefined} onClick={() => void changeStrategy(s)} disabled={saving || pool.strategy === s} style={{ fontSize: 13 }}>
-                {t(strategyLabelMap[s])}
-              </button>
-            ))}
-            <span style={{ fontSize: 12, color: "var(--text-muted)", alignSelf: "center", marginLeft: 4 }}>
-              {t(strategyDescMap[pool.strategy] ?? "roundRobinDesc")}
-            </span>
+          {/* Strategy */}
+          <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 8, fontSize: 13, flexWrap: "wrap" }}>
+            {editingStrategy ? (
+              <>
+                {strategyKeys.map((s) => (
+                  <button key={s} className={pool.strategy === s ? "primary" : undefined} onClick={() => void changeStrategy(s)} disabled={saving || pool.strategy === s} style={{ fontSize: 12 }}>
+                    {t(strategyLabelMap[s])}
+                  </button>
+                ))}
+                <button onClick={() => setEditingStrategy(false)} style={{ fontSize: 11 }}>{t("cancel")}</button>
+              </>
+            ) : (
+              <span style={{ color: "var(--text-muted)", cursor: "pointer" }} onClick={() => setEditingStrategy(true)}>
+                {t(strategyLabelMap[pool.strategy] ?? "roundRobin")} — {t(strategyDescMap[pool.strategy] ?? "roundRobinDesc")}
+              </span>
+            )}
           </div>
-          <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+
+          {/* Rate Limit */}
+          <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
             <span style={{ color: "var(--text-muted)", flexShrink: 0 }}>{t("rateLimitRPM")}</span>
-            <input
-              type="number"
-              value={rpmInput}
-              onChange={(e) => setRpmInput(e.target.value)}
-              onBlur={() => void saveRPM()}
-              onKeyDown={(e) => { if (e.key === "Enter") void saveRPM() }}
-              min={0}
-              style={{ width: 80, padding: "4px 8px", fontSize: 13 }}
-              placeholder={t("rateLimitPlaceholder")}
-            />
+            <input type="number" value={rpmInput} onChange={(e) => setRpmInput(e.target.value)}
+              onBlur={() => void saveRPM()} onKeyDown={(e) => { if (e.key === "Enter") void saveRPM() }}
+              min={0} style={{ width: 80, padding: "4px 8px", fontSize: 13 }} placeholder={t("rateLimitPlaceholder")} />
             <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{t("rateLimitRPMDesc")}</span>
           </div>
-          <div style={{ marginTop: 12, padding: 10, background: "var(--bg)", borderRadius: "var(--radius)", fontSize: 12, fontFamily: "monospace", display: "flex", alignItems: "center", gap: 8 }}>
-            <CopyableSecret
-              idleLabel={t("poolKey")}
-              copiedLabel={t("copied")}
-              secret={pool.apiKey ?? ""}
-              maskedSecret={maskedKey}
-              visible={keyVisible}
-              copyTitle={t("clickToCopy")}
-            />
+
+          {/* Proxy URL */}
+          <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+            <span style={{ color: "var(--text-muted)", flexShrink: 0 }}>{t("poolProxy")}</span>
+            {editingProxy ? (
+              <>
+                <input type="text" value={proxyInput} onChange={(e) => setProxyInput(e.target.value)}
+                  onBlur={() => void handleProxySave()} onKeyDown={(e) => { if (e.key === "Enter") void handleProxySave() }}
+                  placeholder={t("poolProxyUrlPlaceholder")} style={{ flex: 1, fontSize: 13, padding: "4px 8px", fontFamily: "monospace" }} autoFocus />
+              </>
+            ) : (
+              <span style={{ fontFamily: "monospace", cursor: "pointer", padding: "2px 8px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 4 }}
+                onClick={() => { setProxyInput(pool.proxyURL ?? ""); setEditingProxy(true) }}>
+                {pool.proxyURL || t("noProxy")}
+              </span>
+            )}
+          </div>
+
+          {/* API Key */}
+          <div style={{ marginTop: 10, padding: 10, background: "var(--bg)", borderRadius: "var(--radius)", fontSize: 12, fontFamily: "monospace", display: "flex", alignItems: "center", gap: 8 }}>
+            <CopyableSecret idleLabel={t("poolKey")} copiedLabel={t("copied")} secret={pool.apiKey ?? ""} maskedSecret={maskedKey} visible={keyVisible} copyTitle={t("clickToCopy")} />
             <button type="button" onClick={() => setKeyVisible(!keyVisible)} style={{ padding: "2px 8px", fontSize: 11 }}>{keyVisible ? t("hide") : t("show")}</button>
             <button type="button" onClick={() => void regenKey()} disabled={saving} style={{ padding: "2px 8px", fontSize: 11 }}>{t("regen")}</button>
           </div>
-          <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)", fontFamily: "monospace" }}>
+          <div style={{ marginTop: 4, fontSize: 12, color: "var(--text-muted)", fontFamily: "monospace" }}>
             {t("baseUrl")} {proxyBase} &nbsp;·&nbsp; Bearer {pool.apiKey?.slice(0, 8)}...
+          </div>
+
+          {/* Pool Accounts */}
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>{t("poolAccounts")} ({poolAccounts.length})</div>
+            {poolAccounts.length === 0 ? (
+              <div style={{ fontSize: 12, color: "var(--text-muted)", padding: 8 }}>{t("noAccountsInPool")}</div>
+            ) : (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {poolAccounts.map(a => (
+                  <span key={a.id} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 4, fontSize: 12 }}>
+                    {a.name}
+                    <span onClick={() => void removeAccount(a.id)} style={{ cursor: "pointer", color: "var(--red)", fontWeight: 600, marginLeft: 2 }} title={t("removeFromPool")}>×</span>
+                  </span>
+                ))}
+              </div>
+            )}
+            {availableAccounts.length > 0 && (
+              <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{t("addToPool")}:</span>
+                <select onChange={(e) => { if (e.target.value) { void addAccount(e.target.value); e.target.value = "" } }} disabled={saving} style={{ fontSize: 12, padding: "3px 6px" }}>
+                  <option value="">-- {t("availableAccounts")} --</option>
+                  {availableAccounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                </select>
+              </div>
+            )}
           </div>
         </>
       )}
+    </div>
+  )
+}
+
+function CreatePoolForm({ onCreated, onCancel }: { onCreated: () => void; onCancel: () => void }) {
+  const [name, setName] = useState("")
+  const [strategy, setStrategy] = useState("round-robin")
+  const [proxyURL, setProxyURL] = useState("")
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState("")
+  const t = useT()
+
+  const handleSubmit = async (e: React.SyntheticEvent) => {
+    e.preventDefault()
+    if (!name.trim()) { setError(t("accountNameRequired")); return }
+    setLoading(true)
+    setError("")
+    try {
+      await api.createPool({ name: name.trim(), strategy, proxyURL: proxyURL.trim() || undefined })
+      onCreated()
+    } catch (err) { setError((err as Error).message) }
+    finally { setLoading(false) }
+  }
+
+  return (
+    <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: 16, marginBottom: 12 }}>
+      <form onSubmit={(e) => void handleSubmit(e)}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <div>
+            <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>{t("poolName")}</div>
+            <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder={t("poolNamePlaceholder")} style={{ fontSize: 13, padding: "4px 8px", width: 200 }} autoFocus />
+          </div>
+          <div>
+            <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>{t("poolProxyUrl")}</div>
+            <input type="text" value={proxyURL} onChange={(e) => setProxyURL(e.target.value)} placeholder={t("poolProxyUrlPlaceholder")} style={{ fontSize: 13, padding: "4px 8px", width: 260, fontFamily: "monospace" }} />
+          </div>
+          <div>
+            <select value={strategy} onChange={(e) => setStrategy(e.target.value)} style={{ fontSize: 13, padding: "5px 8px" }}>
+              {strategyKeys.map(s => <option key={s} value={s}>{t(strategyLabelMap[s])}</option>)}
+            </select>
+          </div>
+          <button type="submit" className="primary" disabled={loading} style={{ fontSize: 13 }}>{loading ? t("creating") : t("createPool")}</button>
+          <button type="button" onClick={onCancel} style={{ fontSize: 13 }}>{t("cancel")}</button>
+        </div>
+        {error && <div style={{ color: "var(--red)", fontSize: 12, marginTop: 8 }}>{error}</div>}
+      </form>
+    </div>
+  )
+}
+
+function PoolManagement({ accounts, proxyPort }: { accounts: Array<Account>; proxyPort: number }) {
+  const [pools, setPools] = useState<Array<Pool>>([])
+  const [showCreate, setShowCreate] = useState(false)
+  const [fetched, setFetched] = useState(false)
+  const t = useT()
+
+  const fetchPools = async () => {
+    try { const data = await api.getPools(); setPools(data); setFetched(true) }
+    catch (err) { console.error("Failed to fetch pools:", err) }
+  }
+
+  useEffect(() => { void fetchPools() }, [])
+
+  const handleUpdate = () => { void fetchPools() }
+  const handleCreated = () => { setShowCreate(false); void fetchPools() }
+
+  return (
+    <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: 16, marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div>
+          <div style={{ fontSize: 15, fontWeight: 600 }}>{t("poolManagement")}</div>
+          <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{t("poolEnabledDesc")}</div>
+        </div>
+        <button className="primary" onClick={() => setShowCreate(!showCreate)} style={{ flexShrink: 0 }}>
+          {showCreate ? t("cancel") : t("createPool")}
+        </button>
+      </div>
+      {showCreate && <CreatePoolForm onCreated={handleCreated} onCancel={() => setShowCreate(false)} />}
+      {fetched && pools.length === 0 && !showCreate && (
+        <div style={{ textAlign: "center", padding: 24, color: "var(--text-muted)", fontSize: 13 }}>
+          <p>{t("noPools")}</p>
+          <p style={{ fontSize: 12 }}>{t("noPoolsHint")}</p>
+        </div>
+      )}
+      {pools.map(pool => (
+        <PoolCard key={pool.id} pool={pool} accounts={accounts} proxyPort={proxyPort} onUpdate={handleUpdate} />
+      ))}
     </div>
   )
 }
@@ -616,7 +820,7 @@ function Dashboard() {
   const [showForm, setShowForm] = useState(false)
   const [loading, setLoading] = useState(true)
   const [proxyPort, setProxyPort] = useState(4141)
-  const [pool, setPool] = useState<PoolConfig>({ enabled: false, strategy: "round-robin" } as PoolConfig)
+  const [pools, setPools] = useState<Array<Pool>>([])
   const [proxySettings, setProxySettings] = useState<ProxySettings>({ proxyURL: "" })
   const t = useT()
 
@@ -628,7 +832,7 @@ function Dashboard() {
 
   useEffect(() => {
     void api.getConfig().then((cfg) => setProxyPort(cfg.proxyPort))
-    void api.getPool().then(setPool).catch(() => {})
+    void api.getPools().then(setPools).catch(() => {})
     void api.getProxySettings().then(setProxySettings).catch(() => {})
     void refresh()
     const interval = setInterval(() => void refresh(), 5000)
@@ -652,14 +856,14 @@ function Dashboard() {
         </div>
       </header>
       <ProxySettingsPanel settings={proxySettings} onChange={setProxySettings} />
-      <PoolSettings pool={pool} proxyPort={proxyPort} onChange={setPool} />
+      <PoolManagement accounts={accounts} proxyPort={proxyPort} />
       <BatchUsagePanel />
       <ProxyUsagePanel accounts={accounts} />
       <ModelMappingPanel />
       {showForm && <AddAccountForm onComplete={handleAdd} onCancel={() => setShowForm(false)} />}
       {loading
         ? <p style={{ color: "var(--text-muted)", textAlign: "center", padding: 40 }}>{t("loading")}</p>
-        : <AccountList accounts={accounts} proxyPort={proxyPort} onRefresh={refresh} />}
+        : <AccountList accounts={accounts} proxyPort={proxyPort} pools={pools} onRefresh={refresh} />}
     </div>
   )
 }

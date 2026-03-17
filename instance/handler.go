@@ -11,6 +11,7 @@ import (
 
 	"copilot-go/anthropic"
 	"copilot-go/config"
+	"copilot-go/handler/upstreamerr"
 	"copilot-go/store"
 
 	"github.com/gin-gonic/gin"
@@ -18,7 +19,7 @@ import (
 
 // DoCompletionsProxy performs the upstream request for completions and returns the raw response.
 // The caller is responsible for closing resp.Body.
-func DoCompletionsProxy(c *gin.Context, state *config.State, bodyBytes []byte) (*http.Response, error) {
+func DoCompletionsProxy(c *gin.Context, state *config.State, bodyBytes []byte, poolID string) (*http.Response, error) {
 	state.RLock()
 	models := state.Models
 	state.RUnlock()
@@ -28,7 +29,7 @@ func DoCompletionsProxy(c *gin.Context, state *config.State, bodyBytes []byte) (
 		return nil, err
 	}
 
-	return ProxyRequestWithBytesCtx(c.Request.Context(), state, "POST", "/chat/completions", rewrittenBody, extraHeaders, hasVision)
+	return ProxyRequestWithBytesCtx(c.Request.Context(), state, "POST", "/chat/completions", rewrittenBody, extraHeaders, hasVision, poolID)
 }
 
 // ForwardCompletionsResponse writes the upstream response to the client.
@@ -39,6 +40,14 @@ func ForwardCompletionsResponse(c *gin.Context, resp *http.Response) {
 	isStream := strings.Contains(contentType, "text/event-stream")
 
 	if isStream {
+		// Even when Content-Type is event-stream, a non-200 status means
+		// the upstream returned an error. Read the body and rewrite it.
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			upstreamerr.HandleUpstreamError(c, resp.StatusCode, body, upstreamerr.FormatOpenAI, "completions_stream")
+			return
+		}
+
 		c.Header("Content-Type", "text/event-stream")
 		c.Header("Cache-Control", "no-cache")
 		c.Header("Connection", "keep-alive")
@@ -68,6 +77,10 @@ func ForwardCompletionsResponse(c *gin.Context, resp *http.Response) {
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to read response"})
+			return
+		}
+		if resp.StatusCode != http.StatusOK {
+			upstreamerr.HandleUpstreamError(c, resp.StatusCode, body, upstreamerr.FormatOpenAI, "completions")
 			return
 		}
 		c.Data(resp.StatusCode, "application/json", body)
@@ -115,7 +128,7 @@ func firstNonEmpty(values ...string) string {
 }
 
 // DoEmbeddingsProxy performs the upstream request for embeddings.
-func DoEmbeddingsProxy(state *config.State, bodyBytes []byte) (*http.Response, error) {
+func DoEmbeddingsProxy(state *config.State, bodyBytes []byte, poolID string) (*http.Response, error) {
 	var payload map[string]interface{}
 	if err := json.Unmarshal(bodyBytes, &payload); err == nil {
 		if model, ok := payload["model"].(string); ok {
@@ -124,7 +137,7 @@ func DoEmbeddingsProxy(state *config.State, bodyBytes []byte) (*http.Response, e
 		}
 	}
 
-	return ProxyRequestWithBytes(state, "POST", "/embeddings", bodyBytes, nil, false)
+	return ProxyRequestWithBytes(state, "POST", "/embeddings", bodyBytes, nil, false, poolID)
 }
 
 // ForwardEmbeddingsResponse writes the upstream embeddings response to the client.
@@ -136,12 +149,16 @@ func ForwardEmbeddingsResponse(c *gin.Context, resp *http.Response) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to read response"})
 		return
 	}
+	if resp.StatusCode != http.StatusOK {
+		upstreamerr.HandleUpstreamError(c, resp.StatusCode, body, upstreamerr.FormatOpenAI, "embeddings")
+		return
+	}
 	c.Data(resp.StatusCode, "application/json", body)
 }
 
 // DoMessagesProxy performs the upstream request for Anthropic messages.
 // Returns the raw response. bodyBytes is the original Anthropic payload.
-func DoMessagesProxy(c *gin.Context, state *config.State, bodyBytes []byte) (*http.Response, error) {
+func DoMessagesProxy(c *gin.Context, state *config.State, bodyBytes []byte, poolID string) (*http.Response, error) {
 	var anthropicPayload anthropic.AnthropicMessagesPayload
 	if err := json.Unmarshal(bodyBytes, &anthropicPayload); err != nil {
 		return nil, fmt.Errorf("invalid request: %v", err)
@@ -154,7 +171,7 @@ func DoMessagesProxy(c *gin.Context, state *config.State, bodyBytes []byte) (*ht
 		return nil, fmt.Errorf("failed to marshal request: %v", err)
 	}
 	extraHeaders := extraHeadersForMessages(openaiPayload.Messages)
-	return ProxyRequestWithBytesCtx(c.Request.Context(), state, "POST", "/chat/completions", openaiBytes, extraHeaders, hasVision)
+	return ProxyRequestWithBytesCtx(c.Request.Context(), state, "POST", "/chat/completions", openaiBytes, extraHeaders, hasVision, poolID)
 }
 
 // ForwardMessagesResponse writes the upstream response to the client in Anthropic format.
@@ -183,7 +200,7 @@ func handleAnthropicNonStream(c *gin.Context, resp *http.Response) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		c.Data(resp.StatusCode, "application/json", body)
+		upstreamerr.HandleUpstreamError(c, resp.StatusCode, body, upstreamerr.FormatAnthropic, "messages")
 		return
 	}
 
@@ -199,8 +216,7 @@ func handleAnthropicNonStream(c *gin.Context, resp *http.Response) {
 func handleAnthropicStream(c *gin.Context, resp *http.Response) {
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		log.Printf("[Stream] Upstream returned status %d: %s", resp.StatusCode, string(body))
-		c.Data(resp.StatusCode, "application/json", body)
+		upstreamerr.HandleUpstreamError(c, resp.StatusCode, body, upstreamerr.FormatAnthropic, "messages_stream")
 		return
 	}
 
@@ -260,16 +276,7 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response) {
 
 	if err := scanner.Err(); err != nil {
 		log.Printf("[Stream] Scanner error: %v", err)
-		_ = writeSSE(w, "error", anthropic.ErrorEvent{
-			Type: "error",
-			Error: anthropic.ErrorData{
-				Type:    "stream_error",
-				Message: fmt.Sprintf("upstream stream error: %v", err),
-			},
-		})
-		if hasFlusher {
-			flusher.Flush()
-		}
+		upstreamerr.HandleUpstreamErrorSSE(w, http.StatusBadGateway, []byte(err.Error()), "messages_stream_scan")
 	}
 }
 

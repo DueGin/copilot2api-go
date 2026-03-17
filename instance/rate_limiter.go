@@ -53,11 +53,13 @@ type RateLimiterManager struct {
 	mu              sync.RWMutex
 	globalLimiter   *TokenBucket // nil if disabled
 	accountLimiters map[string]*TokenBucket
-	perAccountRPM   int // from PoolConfig, 0 = disabled
+	perAccountRPM   int            // legacy global per-account RPM, 0 = disabled
+	poolRPM         map[string]int // poolID -> RPM
 }
 
 var rateLimiter = &RateLimiterManager{
 	accountLimiters: make(map[string]*TokenBucket),
+	poolRPM:         make(map[string]int),
 }
 
 // InitRateLimiter initializes the global rate limiter from environment variables.
@@ -84,12 +86,43 @@ func SetPerAccountRPM(rpm int) {
 	rateLimiter.accountLimiters = make(map[string]*TokenBucket)
 }
 
-// CheckRateLimit checks both global and per-account rate limits.
+// SetPoolRPM sets the per-account RPM for a specific pool.
+func SetPoolRPM(poolID string, rpm int) {
+	rateLimiter.mu.Lock()
+	defer rateLimiter.mu.Unlock()
+	if rpm > 0 {
+		rateLimiter.poolRPM[poolID] = rpm
+	} else {
+		delete(rateLimiter.poolRPM, poolID)
+	}
+	// Reset limiters for accounts in this pool to pick up the new rate.
+	rateLimiter.accountLimiters = make(map[string]*TokenBucket)
+}
+
+// RemovePoolRPM removes the RPM configuration for a pool.
+func RemovePoolRPM(poolID string) {
+	rateLimiter.mu.Lock()
+	defer rateLimiter.mu.Unlock()
+	delete(rateLimiter.poolRPM, poolID)
+}
+
+// CheckRateLimit checks both global and per-account rate limits (legacy, no pool).
 // Returns (allowed, retryAfterSeconds).
 func CheckRateLimit(accountID string) (bool, float64) {
+	return CheckRateLimitForPool(accountID, "")
+}
+
+// CheckRateLimitForPool checks global and per-account rate limits, using pool-specific RPM if available.
+func CheckRateLimitForPool(accountID, poolID string) (bool, float64) {
 	rateLimiter.mu.RLock()
 	globalLim := rateLimiter.globalLimiter
 	perRPM := rateLimiter.perAccountRPM
+	// Pool-specific RPM overrides the global per-account RPM.
+	if poolID != "" {
+		if poolSpecific, ok := rateLimiter.poolRPM[poolID]; ok {
+			perRPM = poolSpecific
+		}
+	}
 	rateLimiter.mu.RUnlock()
 
 	// Check global limit first.

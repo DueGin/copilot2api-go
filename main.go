@@ -37,6 +37,21 @@ func main() {
 		log.Printf("Using HTTP proxy: %s", proxyCfg.ProxyURL)
 	}
 
+	// Migrate legacy pool config to multi-pool format.
+	if err := store.MigratePoolConfig(); err != nil {
+		log.Printf("Warning: pool config migration failed: %v", err)
+	}
+
+	// Build per-pool HTTP clients.
+	if pools, err := store.GetPools(); err == nil {
+		for _, p := range pools {
+			if p.ProxyURL != "" {
+				instance.BuildPoolClients(p.ID, p.ProxyURL)
+				log.Printf("Pool '%s' using proxy: %s", p.Name, p.ProxyURL)
+			}
+		}
+	}
+
 	// Auto-start enabled accounts
 	if *autoStart {
 		accounts, err := store.GetEnabledAccounts()

@@ -5,7 +5,25 @@
       "WebSearch",
       "WebFetch(domain:raw.githubusercontent.com)",
       "WebFetch(domain:bootk.id)",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "Bash(find /Users/duegin -maxdepth 6 -name handler.go -path */instance/*)",
+      "Bash(find /Users/duegin -maxdepth 8 -name *.go -path *copilot*)",
+      "Bash(find /Users/duegin -maxdepth 8 -name *.go)",
+      "Bash(go build:*)",
+      "Bash(/opt/homebrew/bin/go build:*)",
+      "Bash(/opt/homebrew/bin/go test:*)",
+      "Bash(grep -E \"\\\\.\\(ts|tsx|js|jsx|vue\\)$\")",
+      "Bash(export PATH=\"/usr/local/go/bin:$HOME/go/bin:/opt/homebrew/bin:$PATH\")",
+      "Bash(export PATH=\"/opt/homebrew/bin:$PATH\")",
+      "Bash(go test:*)",
+      "WebFetch(domain:docs.anthropic.com)",
+      "Bash(grep -E \"\\\\.go$|\\\\.yml$|\\\\.yaml$|\\\\.md$|Dockerfile\")",
+      "Bash(grep -r \"TODO\\\\|FIXME\\\\|XXX\\\\|HACK\" /Volumes/T7/project/copilot2api-go --include=*.go --include=*.ts --include=*.tsx)",
+      "Bash(npm run:*)",
+      "Bash(npx tsc:*)",
+      "Bash(export PATH=\"$HOME/.nvm/versions/node/v22.21.1/bin:$PATH\")",
+      "Bash(node node_modules/typescript/lib/tsc.js --noEmit)",
+      "Bash(node node_modules/vite/bin/vite.js build)"
     ]
   }
 }

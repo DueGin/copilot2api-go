@@ -20,20 +20,12 @@ type Account struct {
 	Priority    int    `json:"priority"`
 }
 
-type PoolConfig struct {
-	Enabled      bool   `json:"enabled"`
-	Strategy     string `json:"strategy"`
-	ApiKey       string `json:"apiKey"`
-	RateLimitRPM int    `json:"rateLimitRPM,omitempty"` // Per-account rate limit (requests per minute), 0 = no limit
-}
-
 type accountStore struct {
 	Accounts []Account `json:"accounts"`
 }
 
 var (
 	accountMu sync.RWMutex
-	poolMu    sync.RWMutex
 )
 
 func readAccounts() ([]Account, error) {
@@ -193,7 +185,12 @@ func DeleteAccount(id string) error {
 			filtered = append(filtered, a)
 		}
 	}
-	return writeAccounts(filtered)
+	if err := writeAccounts(filtered); err != nil {
+		return err
+	}
+
+	// Remove from any pool.
+	return RemoveAccountFromAllPools(id)
 }
 
 func RegenerateApiKey(id string) (string, error) {
@@ -216,56 +213,4 @@ func RegenerateApiKey(id string) (string, error) {
 		}
 	}
 	return "", nil
-}
-
-func GetPoolConfig() (*PoolConfig, error) {
-	poolMu.RLock()
-	defer poolMu.RUnlock()
-
-	data, err := os.ReadFile(PoolConfigFile())
-	if err != nil {
-		return &PoolConfig{Strategy: "round-robin"}, nil
-	}
-	var cfg PoolConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return &PoolConfig{Strategy: "round-robin"}, nil
-	}
-	if cfg.Strategy == "" {
-		cfg.Strategy = "round-robin"
-	}
-	return &cfg, nil
-}
-
-func UpdatePoolConfig(cfg *PoolConfig) error {
-	poolMu.Lock()
-	defer poolMu.Unlock()
-
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(PoolConfigFile(), data, 0644)
-}
-
-func RegeneratePoolApiKey() (string, error) {
-	poolMu.Lock()
-	defer poolMu.Unlock()
-
-	data, err := os.ReadFile(PoolConfigFile())
-	if err != nil {
-		return "", err
-	}
-	var cfg PoolConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return "", err
-	}
-	cfg.ApiKey = "sk-pool-" + uuid.New().String()
-	out, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(PoolConfigFile(), out, 0644); err != nil {
-		return "", err
-	}
-	return cfg.ApiKey, nil
 }

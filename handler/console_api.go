@@ -15,7 +15,6 @@ import (
 	"copilot-go/store"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 )
 
 // RegisterConsoleAPI registers all Web Console management API routes.
@@ -72,10 +71,15 @@ func RegisterConsoleAPI(r *gin.Engine, proxyPort int) {
 	protected.GET("/auth/poll/:sessionId", handlePollSession)
 	protected.POST("/auth/complete", handleCompleteAuth)
 
-	// Pool config
-	protected.GET("/pool", handleGetPool)
-	protected.PUT("/pool", handleUpdatePool)
-	protected.POST("/pool/regenerate-key", handleRegeneratePoolKey)
+	// Pool management (multi-pool)
+	protected.GET("/pools", handleGetPools)
+	protected.GET("/pools/:id", handleGetPoolDetail)
+	protected.POST("/pools", handleCreatePool)
+	protected.PUT("/pools/:id", handleUpdatePoolNew)
+	protected.DELETE("/pools/:id", handleDeletePool)
+	protected.POST("/pools/:id/regenerate-key", handleRegeneratePoolKeyNew)
+	protected.POST("/pools/:id/accounts", handleAddAccountToPool)
+	protected.DELETE("/pools/:id/accounts/:accountId", handleRemoveAccountFromPool)
 
 	// Model mapping
 	protected.GET("/model-map", handleGetModelMap)
@@ -411,83 +415,186 @@ func handleCompleteAuth(c *gin.Context) {
 	c.JSON(http.StatusCreated, account)
 }
 
-// --- Pool handlers ---
+// --- Pool handlers (multi-pool) ---
 
-func handleGetPool(c *gin.Context) {
-	cfg, err := store.GetPoolConfig()
+func handleGetPools(c *gin.Context) {
+	pools, err := store.GetPools()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, cfg)
+	if pools == nil {
+		pools = []store.Pool{}
+	}
+	c.JSON(http.StatusOK, pools)
 }
 
-func handleUpdatePool(c *gin.Context) {
+func handleGetPoolDetail(c *gin.Context) {
+	id := c.Param("id")
+	pool, err := store.GetPool(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if pool == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "pool not found"})
+		return
+	}
+	c.JSON(http.StatusOK, pool)
+}
+
+func handleCreatePool(c *gin.Context) {
+	var body struct {
+		Name     string `json:"name"`
+		Strategy string `json:"strategy"`
+		ProxyURL string `json:"proxyURL"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+	if body.Name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+	if body.ProxyURL != "" {
+		if _, err := url.ParseRequestURI(body.ProxyURL); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid proxy URL"})
+			return
+		}
+	}
+
+	pool, err := store.AddPool(body.Name, body.Strategy, body.ProxyURL)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Build dedicated HTTP clients for the pool.
+	if pool.ProxyURL != "" {
+		instance.BuildPoolClients(pool.ID, pool.ProxyURL)
+	}
+
+	c.JSON(http.StatusCreated, pool)
+}
+
+func handleUpdatePoolNew(c *gin.Context) {
+	id := c.Param("id")
 	var updates map[string]interface{}
 	if err := c.ShouldBindJSON(&updates); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
 
-	// Read existing config first, then merge updates
-	existing, err := store.GetPoolConfig()
+	// Validate proxy URL if provided.
+	if v, ok := updates["proxyURL"].(string); ok && v != "" {
+		if _, err := url.ParseRequestURI(v); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid proxy URL"})
+			return
+		}
+	}
+
+	// Get old pool to detect proxy URL changes.
+	oldPool, err := store.GetPool(id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-
-	if v, ok := updates["enabled"]; ok {
-		if b, ok := v.(bool); ok {
-			existing.Enabled = b
-		}
-	}
-	if v, ok := updates["strategy"]; ok {
-		if s, ok := v.(string); ok && s != "" {
-			existing.Strategy = s
-		}
-	}
-	if v, ok := updates["rateLimitRPM"]; ok {
-		switch rv := v.(type) {
-		case float64:
-			existing.RateLimitRPM = int(rv)
-		case int:
-			existing.RateLimitRPM = rv
-		}
-	}
-
-	// Generate a key if pool is being enabled and has no key yet
-	if existing.Enabled && existing.ApiKey == "" {
-		existing.ApiKey = "sk-pool-" + uuid.New().String()
-	}
-
-	if existing.Strategy == "" {
-		existing.Strategy = "round-robin"
-	}
-
-	if err := store.UpdatePoolConfig(existing); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	if oldPool == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "pool not found"})
 		return
 	}
 
-	// Sync per-account rate limiter.
-	instance.SetPerAccountRPM(existing.RateLimitRPM)
+	pool, err := store.UpdatePool(id, updates)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if pool == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "pool not found"})
+		return
+	}
 
-	c.JSON(http.StatusOK, existing)
+	// Rebuild HTTP clients if proxy URL changed.
+	if pool.ProxyURL != oldPool.ProxyURL {
+		instance.RebuildPoolClients(pool.ID, pool.ProxyURL)
+	}
+
+	// Update rate limiter if RPM changed.
+	if pool.RateLimitRPM != oldPool.RateLimitRPM {
+		instance.SetPoolRPM(pool.ID, pool.RateLimitRPM)
+	}
+
+	c.JSON(http.StatusOK, pool)
 }
 
-func handleRegeneratePoolKey(c *gin.Context) {
-	_, err := store.RegeneratePoolApiKey()
+func handleDeletePool(c *gin.Context) {
+	id := c.Param("id")
+	instance.RemovePoolClients(id)
+	instance.RemovePoolRPM(id)
+	if err := store.DeletePool(id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+func handleRegeneratePoolKeyNew(c *gin.Context) {
+	id := c.Param("id")
+	_, err := store.RegeneratePoolKey(id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	// Return the full config so frontend gets the complete PoolConfig object
-	cfg, err := store.GetPoolConfig()
+	pool, err := store.GetPool(id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, cfg)
+	c.JSON(http.StatusOK, pool)
+}
+
+func handleAddAccountToPool(c *gin.Context) {
+	poolID := c.Param("id")
+	var body struct {
+		AccountID string `json:"accountId"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.AccountID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "accountId is required"})
+		return
+	}
+
+	// Verify account exists.
+	account, err := store.GetAccount(body.AccountID)
+	if err != nil || account == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "account not found"})
+		return
+	}
+
+	if err := store.AddAccountToPool(poolID, body.AccountID); err != nil {
+		if _, ok := err.(*store.AccountAlreadyInPoolError); ok {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	pool, _ := store.GetPool(poolID)
+	c.JSON(http.StatusOK, pool)
+}
+
+func handleRemoveAccountFromPool(c *gin.Context) {
+	poolID := c.Param("id")
+	accountID := c.Param("accountId")
+
+	if err := store.RemoveAccountFromPool(poolID, accountID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	pool, _ := store.GetPool(poolID)
+	c.JSON(http.StatusOK, pool)
 }
 
 // --- Model map handlers ---
