@@ -102,11 +102,13 @@ func selectLeastUsed(accounts []store.Account) *store.Account {
 }
 
 // selectSmart picks the account with the lowest weighted score.
-// Score = requestCount + penalty if recently 429'd.
+// Score = requestCount + 429Penalty - priorityBonus.
 // The 429 penalty decays over 5 minutes.
+// Higher Priority accounts get a lower score (priorityWeight per point).
 func selectSmart(accounts []store.Account) *store.Account {
 	const penaltyDuration = 5 * time.Minute
 	const maxPenalty = 1000.0
+	const priorityWeight = 50.0
 
 	now := time.Now()
 	best := &accounts[0]
@@ -126,7 +128,7 @@ func selectSmart(accounts []store.Account) *store.Account {
 			}
 		}
 
-		score := count + penalty
+		score := count + penalty - float64(accounts[i].Priority)*priorityWeight
 		if score < bestScore {
 			bestScore = score
 			best = &accounts[i]
