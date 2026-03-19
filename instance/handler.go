@@ -33,7 +33,7 @@ func DoCompletionsProxy(c *gin.Context, state *config.State, bodyBytes []byte, p
 }
 
 // ForwardCompletionsResponse writes the upstream response to the client.
-func ForwardCompletionsResponse(c *gin.Context, resp *http.Response) {
+func ForwardCompletionsResponse(c *gin.Context, resp *http.Response, accountID string) {
 	defer func() { _ = resp.Body.Close() }()
 
 	contentType := resp.Header.Get("Content-Type")
@@ -44,7 +44,7 @@ func ForwardCompletionsResponse(c *gin.Context, resp *http.Response) {
 		// the upstream returned an error. Read the body and rewrite it.
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
-			upstreamerr.HandleUpstreamError(c, resp.StatusCode, body, upstreamerr.FormatOpenAI, "completions_stream")
+			upstreamerr.HandleUpstreamError(c, resp.StatusCode, body, upstreamerr.FormatOpenAI, "completions_stream", accountID)
 			return
 		}
 
@@ -80,7 +80,7 @@ func ForwardCompletionsResponse(c *gin.Context, resp *http.Response) {
 			return
 		}
 		if resp.StatusCode != http.StatusOK {
-			upstreamerr.HandleUpstreamError(c, resp.StatusCode, body, upstreamerr.FormatOpenAI, "completions")
+			upstreamerr.HandleUpstreamError(c, resp.StatusCode, body, upstreamerr.FormatOpenAI, "completions", accountID)
 			return
 		}
 		c.Data(resp.StatusCode, "application/json", body)
@@ -141,7 +141,7 @@ func DoEmbeddingsProxy(state *config.State, bodyBytes []byte, poolID string, acc
 }
 
 // ForwardEmbeddingsResponse writes the upstream embeddings response to the client.
-func ForwardEmbeddingsResponse(c *gin.Context, resp *http.Response) {
+func ForwardEmbeddingsResponse(c *gin.Context, resp *http.Response, accountID string) {
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
@@ -150,7 +150,7 @@ func ForwardEmbeddingsResponse(c *gin.Context, resp *http.Response) {
 		return
 	}
 	if resp.StatusCode != http.StatusOK {
-		upstreamerr.HandleUpstreamError(c, resp.StatusCode, body, upstreamerr.FormatOpenAI, "embeddings")
+		upstreamerr.HandleUpstreamError(c, resp.StatusCode, body, upstreamerr.FormatOpenAI, "embeddings", accountID)
 		return
 	}
 	c.Data(resp.StatusCode, "application/json", body)
@@ -176,7 +176,7 @@ func DoMessagesProxy(c *gin.Context, state *config.State, bodyBytes []byte, pool
 
 // ForwardMessagesResponse writes the upstream response to the client in Anthropic format.
 // originalBody is the original Anthropic request (used to determine stream mode).
-func ForwardMessagesResponse(c *gin.Context, resp *http.Response, originalBody []byte) {
+func ForwardMessagesResponse(c *gin.Context, resp *http.Response, originalBody []byte, accountID string) {
 	defer func() { _ = resp.Body.Close() }()
 
 	var anthropicPayload anthropic.AnthropicMessagesPayload
@@ -186,13 +186,13 @@ func ForwardMessagesResponse(c *gin.Context, resp *http.Response, originalBody [
 	}
 
 	if anthropicPayload.Stream {
-		handleAnthropicStream(c, resp)
+		handleAnthropicStream(c, resp, accountID)
 	} else {
-		handleAnthropicNonStream(c, resp)
+		handleAnthropicNonStream(c, resp, accountID)
 	}
 }
 
-func handleAnthropicNonStream(c *gin.Context, resp *http.Response) {
+func handleAnthropicNonStream(c *gin.Context, resp *http.Response, accountID string) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to read response"})
@@ -200,7 +200,7 @@ func handleAnthropicNonStream(c *gin.Context, resp *http.Response) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		upstreamerr.HandleUpstreamError(c, resp.StatusCode, body, upstreamerr.FormatAnthropic, "messages")
+		upstreamerr.HandleUpstreamError(c, resp.StatusCode, body, upstreamerr.FormatAnthropic, "messages", accountID)
 		return
 	}
 
@@ -213,10 +213,10 @@ func handleAnthropicNonStream(c *gin.Context, resp *http.Response) {
 	c.JSON(http.StatusOK, anthropic.TranslateToAnthropic(openaiResp))
 }
 
-func handleAnthropicStream(c *gin.Context, resp *http.Response) {
+func handleAnthropicStream(c *gin.Context, resp *http.Response, accountID string) {
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		upstreamerr.HandleUpstreamError(c, resp.StatusCode, body, upstreamerr.FormatAnthropic, "messages_stream")
+		upstreamerr.HandleUpstreamError(c, resp.StatusCode, body, upstreamerr.FormatAnthropic, "messages_stream", accountID)
 		return
 	}
 
@@ -276,7 +276,7 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response) {
 
 	if err := scanner.Err(); err != nil {
 		log.Printf("[Stream] Scanner error: %v", err)
-		upstreamerr.HandleUpstreamErrorSSE(w, http.StatusBadGateway, []byte(err.Error()), "messages_stream_scan")
+		upstreamerr.HandleUpstreamErrorSSE(w, http.StatusBadGateway, []byte(err.Error()), "messages_stream_scan", accountID)
 	}
 }
 

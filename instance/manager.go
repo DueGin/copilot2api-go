@@ -93,7 +93,7 @@ func StartInstance(account store.Account) error {
 	// Start background token refresh
 	go tokenRefreshLoop(inst)
 
-	log.Printf("Instance started for account: %s", account.Name)
+	log.Printf("Instance started for account: %s (proxy=%s)", account.Name, resolveAccountProxyForLog(account.ID))
 	return nil
 }
 
@@ -189,7 +189,8 @@ func GetUser(accountID string) (*CopilotUser, error) {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		proxyAddr := resolveAccountProxyForLog(accountID)
+		return nil, fmt.Errorf("failed to get user (proxy=%s): %w", proxyAddr, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -275,7 +276,8 @@ func refreshCopilotToken(state *config.State, accountID string) error {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to get copilot token: %w", err)
+		proxyAddr := resolveAccountProxyForLog(accountID)
+		return fmt.Errorf("failed to get copilot token (proxy=%s): %w", proxyAddr, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -342,7 +344,8 @@ func fetchModels(state *config.State, accountID string) error {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		proxyAddr := resolveAccountProxyForLog(accountID)
+		return fmt.Errorf("failed to fetch models (proxy=%s): %w", proxyAddr, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -433,7 +436,7 @@ func buildTransport(streaming bool, proxyRawURL string) *http.Transport {
 						t.Dial = dialer.Dial //nolint:staticcheck // fallback for non-context dialer
 					}
 				} else {
-					log.Printf("Failed to create SOCKS5 dialer for %s: %v", parsed.Host, dialErr)
+					log.Printf("Failed to create SOCKS5 dialer for %s: %v", proxyRawURL, dialErr)
 				}
 			default:
 				// HTTP/HTTPS proxy (existing behavior).
@@ -590,6 +593,39 @@ func getAccountDefaultClient(accountID string) *http.Client {
 	return c
 }
 
+// resolveProxyForLog returns the proxy URL string that is effectively used for
+// the given account/pool combination, following the three-level priority:
+// account > pool > global. Returns "(direct)" when no proxy is configured.
+func resolveProxyForLog(accountID, poolID string) string {
+	// Account-level proxy.
+	if accountID != "" {
+		if acct, err := store.GetAccount(accountID); err == nil && acct != nil && acct.ProxyURL != "" {
+			return acct.ProxyURL
+		}
+	}
+	// Pool-level proxy.
+	if poolID != "" {
+		if pools, err := store.GetPools(); err == nil {
+			for _, p := range pools {
+				if p.ID == poolID && p.ProxyURL != "" {
+					return p.ProxyURL
+				}
+			}
+		}
+	}
+	// Global proxy.
+	if g := config.GetProxyURL(); g != "" {
+		return g
+	}
+	return "(direct)"
+}
+
+// resolveAccountProxyForLog returns the proxy URL for a single account context
+// (no pool), following account > global priority.
+func resolveAccountProxyForLog(accountID string) string {
+	return resolveProxyForLog(accountID, "")
+}
+
 func ProxyRequestWithBytes(state *config.State, method, path string, bodyBytes []byte, extraHeaders http.Header, hasVision bool, poolID string, accountID string) (*http.Response, error) {
 	return ProxyRequestWithBytesCtx(context.Background(), state, method, path, bodyBytes, extraHeaders, hasVision, poolID, accountID)
 }
@@ -621,5 +657,10 @@ func ProxyRequestWithBytesCtx(ctx context.Context, state *config.State, method, 
 	if client == nil {
 		client = getStreamingClient()
 	}
-	return client.Do(req)
+	resp, err := client.Do(req)
+	if err != nil {
+		proxyAddr := resolveProxyForLog(accountID, poolID)
+		return nil, fmt.Errorf("%w (proxy=%s)", err, proxyAddr)
+	}
+	return resp, nil
 }

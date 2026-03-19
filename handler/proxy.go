@@ -215,7 +215,7 @@ func proxyCompletions(c *gin.Context) {
 		}
 
 		// Forward the response.
-		instance.ForwardCompletionsResponse(c, resp)
+		instance.ForwardCompletionsResponse(c, resp, resolved.AccountID)
 		return
 	}
 }
@@ -278,7 +278,7 @@ func proxyEmbeddings(c *gin.Context) {
 			continue
 		}
 
-		instance.ForwardEmbeddingsResponse(c, resp)
+		instance.ForwardEmbeddingsResponse(c, resp, resolved.AccountID)
 		return
 	}
 }
@@ -333,7 +333,7 @@ func proxyMessages(c *gin.Context) {
 			continue
 		}
 
-		instance.ForwardMessagesResponse(c, resp, bodyBytes)
+		instance.ForwardMessagesResponse(c, resp, bodyBytes, resolved.AccountID)
 		return
 	}
 }

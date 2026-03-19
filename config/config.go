@@ -71,7 +71,7 @@ func NewHTTPClient(timeout time.Duration) *http.Client {
 						t.Dial = dialer.Dial //nolint:staticcheck
 					}
 				} else {
-					log.Printf("Failed to create SOCKS5 dialer: %v", dialErr)
+					log.Printf("Failed to create SOCKS5 dialer for %s: %v", pURL, dialErr)
 				}
 			default:
 				t.Proxy = http.ProxyURL(parsed)

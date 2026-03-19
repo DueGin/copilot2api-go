@@ -19,8 +19,9 @@ func HandleUpstreamError(
 	upstreamBody []byte,
 	format ResponseFormat,
 	endpoint string,
+	accountID string,
 ) {
-	logUpstreamError(endpoint, upstreamStatus, upstreamBody, c.ClientIP(), c.Request.URL.Path)
+	logUpstreamError(endpoint, upstreamStatus, upstreamBody, c.ClientIP(), c.Request.URL.Path, accountID)
 
 	ue := Lookup(upstreamStatus)
 	body := BuildErrorBody(ue, format)
@@ -35,8 +36,9 @@ func HandleUpstreamErrorSSE(
 	upstreamStatus int,
 	upstreamBody []byte,
 	endpoint string,
+	accountID string,
 ) {
-	logUpstreamError(endpoint, upstreamStatus, upstreamBody, "", "")
+	logUpstreamError(endpoint, upstreamStatus, upstreamBody, "", "", accountID)
 
 	ue := Lookup(upstreamStatus)
 	data := BuildSSEErrorData(ue)
@@ -47,14 +49,14 @@ func HandleUpstreamErrorSSE(
 }
 
 // logUpstreamError writes a structured log line with all available context.
-func logUpstreamError(endpoint string, status int, body []byte, clientIP, path string) {
+func logUpstreamError(endpoint string, status int, body []byte, clientIP, path string, accountID string) {
 	truncated := truncateBody(body, 2048)
 	if clientIP != "" {
-		log.Printf("[UpstreamError] endpoint=%s upstream_status=%d body=%s client_ip=%s path=%s",
-			endpoint, status, truncated, clientIP, path)
+		log.Printf("[UpstreamError] endpoint=%s upstream_status=%d account=%s body=%s client_ip=%s path=%s",
+			endpoint, status, accountID, truncated, clientIP, path)
 	} else {
-		log.Printf("[UpstreamError] endpoint=%s upstream_status=%d body=%s",
-			endpoint, status, truncated)
+		log.Printf("[UpstreamError] endpoint=%s upstream_status=%d account=%s body=%s",
+			endpoint, status, accountID, truncated)
 	}
 }
 
