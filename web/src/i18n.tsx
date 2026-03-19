@@ -14,7 +14,7 @@ const en = {
   regen: "Regen",
 
   // Auth
-  consoleTitle: "Copilot API Console",
+  consoleTitle: "Console",
   setupSubtitle: "Create your admin account to get started",
   loginSubtitle: "Sign in to continue",
   usernamePlaceholder: "Username",
@@ -167,6 +167,10 @@ const en = {
   proxyUrlPlaceholder: "http://host:port or socks5://host:port",
   proxySaved: "Saved",
   proxyClear: "Clear",
+  accountProxy: "Account Proxy:",
+  accountProxyPlaceholder: "socks5://user:pass@host:port",
+  accountProxyHint: "Overrides pool & global proxy",
+  noAccountProxy: "No proxy (use pool/global)",
 
   // Copilot Models
   fetchModels: "Fetch Models",
@@ -192,7 +196,7 @@ const zh: Translations = {
   regen: "重新生成",
 
   // Auth
-  consoleTitle: "Copilot API 控制台",
+  consoleTitle: "控制台",
   setupSubtitle: "创建管理员账户以开始使用",
   loginSubtitle: "登录以继续",
   usernamePlaceholder: "用户名",
@@ -345,6 +349,10 @@ const zh: Translations = {
   proxyUrlPlaceholder: "http://host:port 或 socks5://host:port",
   proxySaved: "已保存",
   proxyClear: "清除",
+  accountProxy: "账号代理：",
+  accountProxyPlaceholder: "socks5://user:pass@host:port",
+  accountProxyHint: "覆盖号池和全局代理",
+  noAccountProxy: "无代理（使用号池/全局）",
 
   // Copilot Models
   fetchModels: "获取模型列表",

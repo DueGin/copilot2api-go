@@ -284,6 +284,25 @@ func handleUpdateAccount(c *gin.Context) {
 		return
 	}
 
+	// Validate proxy URL if provided.
+	if v, ok := updates["proxyURL"].(string); ok && v != "" {
+		if _, err := url.ParseRequestURI(v); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid proxy URL"})
+			return
+		}
+	}
+
+	// Get old account to detect proxy URL changes.
+	oldAccount, err := store.GetAccount(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if oldAccount == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "account not found"})
+		return
+	}
+
 	account, err := store.UpdateAccount(id, updates)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -293,6 +312,12 @@ func handleUpdateAccount(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "account not found"})
 		return
 	}
+
+	// Rebuild account HTTP clients if proxy URL changed.
+	if account.ProxyURL != oldAccount.ProxyURL {
+		instance.RebuildAccountClients(account.ID, account.ProxyURL)
+	}
+
 	c.JSON(http.StatusOK, account)
 }
 

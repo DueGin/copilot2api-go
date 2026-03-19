@@ -16,6 +16,8 @@ import (
 	"copilot-go/config"
 	"copilot-go/copilot"
 	"copilot-go/store"
+
+	"golang.org/x/net/proxy"
 )
 
 type ProxyInstance struct {
@@ -41,6 +43,11 @@ func StartInstance(account store.Account) error {
 	}
 	mu.Unlock()
 
+	// Build account-level HTTP clients if proxy URL is configured.
+	if account.ProxyURL != "" {
+		BuildAccountClients(account.ID, account.ProxyURL)
+	}
+
 	state := config.NewState()
 	state.Lock()
 	state.GithubToken = account.GithubToken
@@ -54,7 +61,7 @@ func StartInstance(account store.Account) error {
 	state.Unlock()
 
 	// Get Copilot token
-	if err := refreshCopilotToken(state); err != nil {
+	if err := refreshCopilotToken(state, account.ID); err != nil {
 		mu.Lock()
 		instances[account.ID] = &ProxyInstance{
 			Account: account,
@@ -67,7 +74,7 @@ func StartInstance(account store.Account) error {
 	}
 
 	// Get models
-	if err := fetchModels(state); err != nil {
+	if err := fetchModels(state, account.ID); err != nil {
 		log.Printf("Warning: failed to fetch models for account %s: %v", account.Name, err)
 	}
 
@@ -102,6 +109,7 @@ func StopInstance(accountID string) {
 	}
 	inst.Status = "stopped"
 	mu.Unlock()
+	RemoveAccountClients(accountID)
 	log.Printf("Instance stopped for account: %s", inst.Account.Name)
 }
 
@@ -173,7 +181,13 @@ func GetUser(accountID string) (*CopilotUser, error) {
 		req.Header[k] = v
 	}
 
-	resp, err := getDefaultClient().Do(req)
+	// Use account-level client if available, else fall back to global.
+	client := getAccountDefaultClient(accountID)
+	if client == nil {
+		client = getDefaultClient()
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -228,7 +242,7 @@ func tokenRefreshLoop(inst *ProxyInstance) {
 		default:
 		}
 
-		if err := refreshCopilotTokenWithRetry(inst.State, 3); err != nil {
+		if err := refreshCopilotTokenWithRetry(inst.State, 3, inst.Account.ID); err != nil {
 			log.Printf("Token refresh failed for %s: %v", inst.Account.Name, err)
 			mu.Lock()
 			inst.Status = "error"
@@ -238,13 +252,13 @@ func tokenRefreshLoop(inst *ProxyInstance) {
 		}
 
 		// Also refresh models.
-		if err := fetchModels(inst.State); err != nil {
+		if err := fetchModels(inst.State, inst.Account.ID); err != nil {
 			log.Printf("Models refresh failed for %s: %v", inst.Account.Name, err)
 		}
 	}
 }
 
-func refreshCopilotToken(state *config.State) error {
+func refreshCopilotToken(state *config.State, accountID string) error {
 	req, err := http.NewRequest("GET", config.GithubCopilotURL, nil)
 	if err != nil {
 		return err
@@ -253,7 +267,13 @@ func refreshCopilotToken(state *config.State) error {
 		req.Header[k] = v
 	}
 
-	resp, err := getDefaultClient().Do(req)
+	// Use account-level client if available, else fall back to global.
+	client := getAccountDefaultClient(accountID)
+	if client == nil {
+		client = getDefaultClient()
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to get copilot token: %w", err)
 	}
@@ -283,7 +303,7 @@ func refreshCopilotToken(state *config.State) error {
 
 // refreshCopilotTokenWithRetry attempts token refresh with exponential backoff.
 // Retries up to maxRetries times on failure before giving up.
-func refreshCopilotTokenWithRetry(state *config.State, maxRetries int) error {
+func refreshCopilotTokenWithRetry(state *config.State, maxRetries int, accountID string) error {
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
@@ -292,7 +312,7 @@ func refreshCopilotTokenWithRetry(state *config.State, maxRetries int) error {
 			log.Printf("Token refresh retry %d/%d after %v", attempt, maxRetries, backoff)
 			time.Sleep(backoff)
 		}
-		lastErr = refreshCopilotToken(state)
+		lastErr = refreshCopilotToken(state, accountID)
 		if lastErr == nil {
 			return nil
 		}
@@ -301,7 +321,7 @@ func refreshCopilotTokenWithRetry(state *config.State, maxRetries int) error {
 	return fmt.Errorf("token refresh failed after %d attempts: %w", maxRetries+1, lastErr)
 }
 
-func fetchModels(state *config.State) error {
+func fetchModels(state *config.State, accountID string) error {
 	state.RLock()
 	baseURL := config.CopilotBaseURL(state.AccountType)
 	state.RUnlock()
@@ -314,7 +334,13 @@ func fetchModels(state *config.State) error {
 		req.Header[k] = v
 	}
 
-	resp, err := getDefaultClient().Do(req)
+	// Use account-level client if available, else fall back to global.
+	client := getAccountDefaultClient(accountID)
+	if client == nil {
+		client = getDefaultClient()
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -357,11 +383,18 @@ var (
 	poolClientMu       sync.RWMutex
 	poolStreamClients  map[string]*http.Client
 	poolDefaultClients map[string]*http.Client
+
+	// Per-account HTTP clients (keyed by account ID).
+	accountClientMu       sync.RWMutex
+	accountStreamClients  map[string]*http.Client
+	accountDefaultClients map[string]*http.Client
 )
 
 func init() {
 	poolStreamClients = make(map[string]*http.Client)
 	poolDefaultClients = make(map[string]*http.Client)
+	accountStreamClients = make(map[string]*http.Client)
+	accountDefaultClients = make(map[string]*http.Client)
 	rebuildHTTPClients()
 }
 
@@ -381,7 +414,31 @@ func buildTransport(streaming bool, proxyRawURL string) *http.Transport {
 	}
 	if proxyRawURL != "" {
 		if parsed, err := url.Parse(proxyRawURL); err == nil {
-			t.Proxy = http.ProxyURL(parsed)
+			switch parsed.Scheme {
+			case "socks5", "socks5h":
+				// SOCKS5 proxy with optional username:password authentication.
+				var auth *proxy.Auth
+				if parsed.User != nil {
+					password, _ := parsed.User.Password()
+					auth = &proxy.Auth{
+						User:     parsed.User.Username(),
+						Password: password,
+					}
+				}
+				dialer, dialErr := proxy.SOCKS5("tcp", parsed.Host, auth, proxy.Direct)
+				if dialErr == nil {
+					if ctxDialer, ok := dialer.(proxy.ContextDialer); ok {
+						t.DialContext = ctxDialer.DialContext
+					} else {
+						t.Dial = dialer.Dial //nolint:staticcheck // fallback for non-context dialer
+					}
+				} else {
+					log.Printf("Failed to create SOCKS5 dialer for %s: %v", parsed.Host, dialErr)
+				}
+			default:
+				// HTTP/HTTPS proxy (existing behavior).
+				t.Proxy = http.ProxyURL(parsed)
+			}
 		}
 	}
 	return t
@@ -480,11 +537,64 @@ func getPoolDefaultClient(poolID string) *http.Client {
 	return c
 }
 
-func ProxyRequestWithBytes(state *config.State, method, path string, bodyBytes []byte, extraHeaders http.Header, hasVision bool, poolID string) (*http.Response, error) {
-	return ProxyRequestWithBytesCtx(context.Background(), state, method, path, bodyBytes, extraHeaders, hasVision, poolID)
+// BuildAccountClients creates dedicated HTTP clients for an account with the given proxy URL.
+func BuildAccountClients(accountID, proxyURL string) {
+	if proxyURL == "" {
+		// No dedicated proxy — account will fall back to pool/global clients.
+		RemoveAccountClients(accountID)
+		return
+	}
+	streaming := &http.Client{
+		Transport: buildTransport(true, proxyURL),
+	}
+	nonStreaming := &http.Client{
+		Timeout:   15 * time.Second,
+		Transport: buildTransport(false, proxyURL),
+	}
+	accountClientMu.Lock()
+	accountStreamClients[accountID] = streaming
+	accountDefaultClients[accountID] = nonStreaming
+	accountClientMu.Unlock()
 }
 
-func ProxyRequestWithBytesCtx(ctx context.Context, state *config.State, method, path string, bodyBytes []byte, extraHeaders http.Header, hasVision bool, poolID string) (*http.Response, error) {
+// RemoveAccountClients removes the dedicated HTTP clients for an account.
+func RemoveAccountClients(accountID string) {
+	accountClientMu.Lock()
+	delete(accountStreamClients, accountID)
+	delete(accountDefaultClients, accountID)
+	accountClientMu.Unlock()
+}
+
+// RebuildAccountClients rebuilds HTTP clients for an account (e.g. when proxy URL changes).
+func RebuildAccountClients(accountID, proxyURL string) {
+	BuildAccountClients(accountID, proxyURL)
+}
+
+func getAccountStreamingClient(accountID string) *http.Client {
+	if accountID == "" {
+		return nil
+	}
+	accountClientMu.RLock()
+	c := accountStreamClients[accountID]
+	accountClientMu.RUnlock()
+	return c
+}
+
+func getAccountDefaultClient(accountID string) *http.Client {
+	if accountID == "" {
+		return nil
+	}
+	accountClientMu.RLock()
+	c := accountDefaultClients[accountID]
+	accountClientMu.RUnlock()
+	return c
+}
+
+func ProxyRequestWithBytes(state *config.State, method, path string, bodyBytes []byte, extraHeaders http.Header, hasVision bool, poolID string, accountID string) (*http.Response, error) {
+	return ProxyRequestWithBytesCtx(context.Background(), state, method, path, bodyBytes, extraHeaders, hasVision, poolID, accountID)
+}
+
+func ProxyRequestWithBytesCtx(ctx context.Context, state *config.State, method, path string, bodyBytes []byte, extraHeaders http.Header, hasVision bool, poolID string, accountID string) (*http.Response, error) {
 	state.RLock()
 	baseURL := config.CopilotBaseURL(state.AccountType)
 	state.RUnlock()
@@ -503,8 +613,11 @@ func ProxyRequestWithBytesCtx(ctx context.Context, state *config.State, method, 
 		req.Header[k] = v
 	}
 
-	// Use pool-specific client if available, else fall back to global.
-	client := getPoolStreamingClient(poolID)
+	// Three-level proxy priority: account > pool > global.
+	client := getAccountStreamingClient(accountID)
+	if client == nil {
+		client = getPoolStreamingClient(poolID)
+	}
 	if client == nil {
 		client = getStreamingClient()
 	}

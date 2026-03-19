@@ -334,6 +334,8 @@ export function AccountCard({ account, proxyPort, poolName, onRefresh }: Props) 
   )
   const [editingName, setEditingName] = useState(false)
   const [nameValue, setNameValue] = useState(account.name)
+  const [editingProxy, setEditingProxy] = useState(false)
+  const [proxyValue, setProxyValue] = useState(account.proxyURL ?? "")
   const t = useT()
 
   const handleToggleUsage = async () => {
@@ -402,6 +404,22 @@ export function AccountCard({ account, proxyPort, poolName, onRefresh }: Props) 
         } catch (err) {
           console.error("Name update failed:", err)
           setNameValue(account.name)
+        }
+      })()
+    }
+  }
+
+  const handleProxySave = () => {
+    const trimmed = proxyValue.trim()
+    setEditingProxy(false)
+    if (trimmed !== (account.proxyURL ?? "")) {
+      void (async () => {
+        try {
+          await api.updateAccount(account.id, { proxyURL: trimmed })
+          await onRefresh()
+        } catch (err) {
+          console.error("Proxy update failed:", err)
+          setProxyValue(account.proxyURL ?? "")
         }
       })()
     }
@@ -545,6 +563,59 @@ export function AccountCard({ account, proxyPort, poolName, onRefresh }: Props) 
         <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
           {t("priorityHint")}
         </span>
+      </div>
+
+      <div
+        style={{
+          marginTop: 8,
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          fontSize: 13,
+        }}
+      >
+        <span style={{ color: "var(--text-muted)" }}>{t("accountProxy")}</span>
+        {editingProxy ? (
+          <input
+            type="text"
+            value={proxyValue}
+            onChange={(e) => setProxyValue(e.target.value)}
+            onBlur={handleProxySave}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleProxySave()
+              if (e.key === "Escape") {
+                setProxyValue(account.proxyURL ?? "")
+                setEditingProxy(false)
+              }
+            }}
+            autoFocus
+            placeholder={t("accountProxyPlaceholder")}
+            style={{
+              flex: 1,
+              padding: "2px 6px",
+              fontSize: 13,
+              fontFamily: "monospace",
+              display: "inline-block",
+            }}
+          />
+        ) : (
+          <span
+            onClick={() => { setProxyValue(account.proxyURL ?? ""); setEditingProxy(true) }}
+            style={{
+              cursor: "pointer",
+              padding: "2px 10px",
+              background: "var(--bg)",
+              border: "1px solid var(--border)",
+              borderRadius: 4,
+              fontFamily: "monospace",
+              fontSize: 12,
+              color: account.proxyURL ? undefined : "var(--text-muted)",
+            }}
+            title={t("accountProxyHint")}
+          >
+            {account.proxyURL || t("noAccountProxy")}
+          </span>
+        )}
       </div>
 
       <ApiKeyPanel apiKey={account.apiKey} onRegenerate={handleRegenerate} />

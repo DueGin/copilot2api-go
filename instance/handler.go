@@ -19,7 +19,7 @@ import (
 
 // DoCompletionsProxy performs the upstream request for completions and returns the raw response.
 // The caller is responsible for closing resp.Body.
-func DoCompletionsProxy(c *gin.Context, state *config.State, bodyBytes []byte, poolID string) (*http.Response, error) {
+func DoCompletionsProxy(c *gin.Context, state *config.State, bodyBytes []byte, poolID string, accountID string) (*http.Response, error) {
 	state.RLock()
 	models := state.Models
 	state.RUnlock()
@@ -29,7 +29,7 @@ func DoCompletionsProxy(c *gin.Context, state *config.State, bodyBytes []byte, p
 		return nil, err
 	}
 
-	return ProxyRequestWithBytesCtx(c.Request.Context(), state, "POST", "/chat/completions", rewrittenBody, extraHeaders, hasVision, poolID)
+	return ProxyRequestWithBytesCtx(c.Request.Context(), state, "POST", "/chat/completions", rewrittenBody, extraHeaders, hasVision, poolID, accountID)
 }
 
 // ForwardCompletionsResponse writes the upstream response to the client.
@@ -128,7 +128,7 @@ func firstNonEmpty(values ...string) string {
 }
 
 // DoEmbeddingsProxy performs the upstream request for embeddings.
-func DoEmbeddingsProxy(state *config.State, bodyBytes []byte, poolID string) (*http.Response, error) {
+func DoEmbeddingsProxy(state *config.State, bodyBytes []byte, poolID string, accountID string) (*http.Response, error) {
 	var payload map[string]interface{}
 	if err := json.Unmarshal(bodyBytes, &payload); err == nil {
 		if model, ok := payload["model"].(string); ok {
@@ -137,7 +137,7 @@ func DoEmbeddingsProxy(state *config.State, bodyBytes []byte, poolID string) (*h
 		}
 	}
 
-	return ProxyRequestWithBytes(state, "POST", "/embeddings", bodyBytes, nil, false, poolID)
+	return ProxyRequestWithBytes(state, "POST", "/embeddings", bodyBytes, nil, false, poolID, accountID)
 }
 
 // ForwardEmbeddingsResponse writes the upstream embeddings response to the client.
@@ -158,7 +158,7 @@ func ForwardEmbeddingsResponse(c *gin.Context, resp *http.Response) {
 
 // DoMessagesProxy performs the upstream request for Anthropic messages.
 // Returns the raw response. bodyBytes is the original Anthropic payload.
-func DoMessagesProxy(c *gin.Context, state *config.State, bodyBytes []byte, poolID string) (*http.Response, error) {
+func DoMessagesProxy(c *gin.Context, state *config.State, bodyBytes []byte, poolID string, accountID string) (*http.Response, error) {
 	var anthropicPayload anthropic.AnthropicMessagesPayload
 	if err := json.Unmarshal(bodyBytes, &anthropicPayload); err != nil {
 		return nil, fmt.Errorf("invalid request: %v", err)
@@ -171,7 +171,7 @@ func DoMessagesProxy(c *gin.Context, state *config.State, bodyBytes []byte, pool
 		return nil, fmt.Errorf("failed to marshal request: %v", err)
 	}
 	extraHeaders := extraHeadersForMessages(openaiPayload.Messages)
-	return ProxyRequestWithBytesCtx(c.Request.Context(), state, "POST", "/chat/completions", openaiBytes, extraHeaders, hasVision, poolID)
+	return ProxyRequestWithBytesCtx(c.Request.Context(), state, "POST", "/chat/completions", openaiBytes, extraHeaders, hasVision, poolID, accountID)
 }
 
 // ForwardMessagesResponse writes the upstream response to the client in Anthropic format.

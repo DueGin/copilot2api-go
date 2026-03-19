@@ -189,7 +189,7 @@ func proxyCompletions(c *gin.Context) {
 		// Record the request.
 		instance.RecordRequest(resolved.AccountID, false, false)
 
-		resp, proxyErr := instance.DoCompletionsProxy(c, resolved.State, bodyBytes, resolved.PoolID)
+		resp, proxyErr := instance.DoCompletionsProxy(c, resolved.State, bodyBytes, resolved.PoolID, resolved.AccountID)
 		if proxyErr != nil {
 			if resp != nil {
 				_ = resp.Body.Close()
@@ -254,7 +254,7 @@ func proxyEmbeddings(c *gin.Context) {
 
 		instance.RecordRequest(resolved.AccountID, false, false)
 
-		resp, proxyErr := instance.DoEmbeddingsProxy(resolved.State, bodyBytes, resolved.PoolID)
+		resp, proxyErr := instance.DoEmbeddingsProxy(resolved.State, bodyBytes, resolved.PoolID, resolved.AccountID)
 		if proxyErr != nil {
 			if resp != nil {
 				_ = resp.Body.Close()
@@ -309,7 +309,7 @@ func proxyMessages(c *gin.Context) {
 
 		instance.RecordRequest(resolved.AccountID, false, false)
 
-		resp, proxyErr := instance.DoMessagesProxy(c, resolved.State, bodyBytes, resolved.PoolID)
+		resp, proxyErr := instance.DoMessagesProxy(c, resolved.State, bodyBytes, resolved.PoolID, resolved.AccountID)
 		if proxyErr != nil {
 			if resp != nil {
 				_ = resp.Body.Close()

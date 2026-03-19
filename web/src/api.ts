@@ -27,6 +27,7 @@ export interface Account {
   enabled: boolean
   createdAt: string
   priority: number
+  proxyURL?: string
   status?: "running" | "stopped" | "error"
   error?: string
   user?: { login: string } | null

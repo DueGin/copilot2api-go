@@ -2,12 +2,14 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/net/proxy"
 )
 
 const (
@@ -51,7 +53,29 @@ func NewHTTPClient(timeout time.Duration) *http.Client {
 	}
 	if pURL := GetProxyURL(); pURL != "" {
 		if parsed, err := url.Parse(pURL); err == nil {
-			t.Proxy = http.ProxyURL(parsed)
+			switch parsed.Scheme {
+			case "socks5", "socks5h":
+				var auth *proxy.Auth
+				if parsed.User != nil {
+					password, _ := parsed.User.Password()
+					auth = &proxy.Auth{
+						User:     parsed.User.Username(),
+						Password: password,
+					}
+				}
+				dialer, dialErr := proxy.SOCKS5("tcp", parsed.Host, auth, proxy.Direct)
+				if dialErr == nil {
+					if ctxDialer, ok := dialer.(proxy.ContextDialer); ok {
+						t.DialContext = ctxDialer.DialContext
+					} else {
+						t.Dial = dialer.Dial //nolint:staticcheck
+					}
+				} else {
+					log.Printf("Failed to create SOCKS5 dialer: %v", dialErr)
+				}
+			default:
+				t.Proxy = http.ProxyURL(parsed)
+			}
 		}
 	}
 	return &http.Client{Timeout: timeout, Transport: t}

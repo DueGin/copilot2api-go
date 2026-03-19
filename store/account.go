@@ -18,6 +18,7 @@ type Account struct {
 	Enabled     bool   `json:"enabled"`
 	CreatedAt   string `json:"createdAt"`
 	Priority    int    `json:"priority"`
+	ProxyURL    string `json:"proxyURL,omitempty"`
 }
 
 type accountStore struct {
@@ -160,6 +161,9 @@ func UpdateAccount(id string, updates map[string]interface{}) (*Account, error) 
 				case int:
 					accounts[i].Priority = pv
 				}
+			}
+			if v, ok := updates["proxyURL"].(string); ok {
+				accounts[i].ProxyURL = v
 			}
 			if err := writeAccounts(accounts); err != nil {
 				return nil, err
