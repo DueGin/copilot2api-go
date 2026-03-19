@@ -89,9 +89,10 @@ func proxyAuth() gin.HandlerFunc {
 
 // resolvedAccount holds the resolved state and account ID.
 type resolvedAccount struct {
-	State     *config.State
-	AccountID string
-	PoolID    string
+	State       *config.State
+	AccountID   string
+	AccountName string
+	PoolID      string
 }
 
 func resolveState(c *gin.Context, exclude map[string]bool) *resolvedAccount {
@@ -120,7 +121,7 @@ func resolveState(c *gin.Context, exclude map[string]bool) *resolvedAccount {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "selected account instance not running"})
 			return nil
 		}
-		return &resolvedAccount{State: state, AccountID: account.ID, PoolID: poolID}
+		return &resolvedAccount{State: state, AccountID: account.ID, AccountName: account.Name, PoolID: poolID}
 	}
 
 	accountID, exists := c.Get("accountID")
@@ -134,7 +135,11 @@ func resolveState(c *gin.Context, exclude map[string]bool) *resolvedAccount {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "account instance not running"})
 		return nil
 	}
-	return &resolvedAccount{State: state, AccountID: aid}
+	accountName := aid // fallback to ID
+	if acct, err := store.GetAccount(aid); err == nil && acct != nil {
+		accountName = acct.Name
+	}
+	return &resolvedAccount{State: state, AccountID: aid, AccountName: accountName}
 }
 
 // isRetryableStatus returns true for HTTP status codes that warrant a retry with a different account.
@@ -197,7 +202,7 @@ func proxyCompletions(c *gin.Context) {
 			instance.RecordRequest(resolved.AccountID, true, false)
 			if attempt < maxAttempts-1 {
 				exclude[resolved.AccountID] = true
-				log.Printf("Completions proxy error for account %s, retrying: %v", resolved.AccountID, proxyErr)
+				log.Printf("Completions proxy error for account %s, retrying: %v", resolved.AccountName, proxyErr)
 				continue
 			}
 			c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("proxy request failed: %v", proxyErr)})
@@ -210,12 +215,12 @@ func proxyCompletions(c *gin.Context) {
 			instance.RecordRequest(resolved.AccountID, true, is429)
 			_ = resp.Body.Close()
 			exclude[resolved.AccountID] = true
-			log.Printf("Upstream returned %d for account %s, retrying with different account", resp.StatusCode, resolved.AccountID)
+			log.Printf("Upstream returned %d for account %s, retrying with different account", resp.StatusCode, resolved.AccountName)
 			continue
 		}
 
 		// Forward the response.
-		instance.ForwardCompletionsResponse(c, resp, resolved.AccountID)
+		instance.ForwardCompletionsResponse(c, resp, resolved.AccountName)
 		return
 	}
 }
@@ -262,7 +267,7 @@ func proxyEmbeddings(c *gin.Context) {
 			instance.RecordRequest(resolved.AccountID, true, false)
 			if attempt < maxAttempts-1 {
 				exclude[resolved.AccountID] = true
-				log.Printf("Embeddings proxy error for account %s, retrying: %v", resolved.AccountID, proxyErr)
+				log.Printf("Embeddings proxy error for account %s, retrying: %v", resolved.AccountName, proxyErr)
 				continue
 			}
 			c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("proxy request failed: %v", proxyErr)})
@@ -274,11 +279,11 @@ func proxyEmbeddings(c *gin.Context) {
 			instance.RecordRequest(resolved.AccountID, true, is429)
 			_ = resp.Body.Close()
 			exclude[resolved.AccountID] = true
-			log.Printf("Upstream returned %d for account %s, retrying with different account", resp.StatusCode, resolved.AccountID)
+			log.Printf("Upstream returned %d for account %s, retrying with different account", resp.StatusCode, resolved.AccountName)
 			continue
 		}
 
-		instance.ForwardEmbeddingsResponse(c, resp, resolved.AccountID)
+		instance.ForwardEmbeddingsResponse(c, resp, resolved.AccountName)
 		return
 	}
 }
@@ -317,7 +322,7 @@ func proxyMessages(c *gin.Context) {
 			instance.RecordRequest(resolved.AccountID, true, false)
 			if attempt < maxAttempts-1 {
 				exclude[resolved.AccountID] = true
-				log.Printf("Messages proxy error for account %s, retrying: %v", resolved.AccountID, proxyErr)
+				log.Printf("Messages proxy error for account %s, retrying: %v", resolved.AccountName, proxyErr)
 				continue
 			}
 			c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("proxy request failed: %v", proxyErr)})
@@ -329,11 +334,11 @@ func proxyMessages(c *gin.Context) {
 			instance.RecordRequest(resolved.AccountID, true, is429)
 			_ = resp.Body.Close()
 			exclude[resolved.AccountID] = true
-			log.Printf("Upstream returned %d for account %s, retrying with different account", resp.StatusCode, resolved.AccountID)
+			log.Printf("Upstream returned %d for account %s, retrying with different account", resp.StatusCode, resolved.AccountName)
 			continue
 		}
 
-		instance.ForwardMessagesResponse(c, resp, bodyBytes, resolved.AccountID)
+		instance.ForwardMessagesResponse(c, resp, bodyBytes, resolved.AccountName)
 		return
 	}
 }
