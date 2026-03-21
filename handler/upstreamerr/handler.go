@@ -1,6 +1,7 @@
 package upstreamerr
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"log"
@@ -23,9 +24,16 @@ func HandleUpstreamError(
 ) {
 	logUpstreamError(endpoint, upstreamStatus, upstreamBody, c.ClientIP(), c.Request.URL.Path, accountName)
 
-	ue := Lookup(upstreamStatus)
-	body := BuildErrorBody(ue, format)
-	c.Data(ue.StatusCode, "application/json", body)
+	// Only rewrite body when it contains "Copilot" to avoid leaking internal
+	// implementation details.  Otherwise, pass through the original upstream
+	// error so downstream callers can see the real reason.
+	if containsCopilot(upstreamBody) {
+		ue := Lookup(upstreamStatus)
+		body := BuildErrorBody(ue, format)
+		c.Data(ue.StatusCode, "application/json", body)
+	} else {
+		c.Data(upstreamStatus, "application/json", upstreamBody)
+	}
 }
 
 // HandleUpstreamErrorSSE logs the raw upstream error and writes an Anthropic
@@ -40,12 +48,27 @@ func HandleUpstreamErrorSSE(
 ) {
 	logUpstreamError(endpoint, upstreamStatus, upstreamBody, "", "", accountName)
 
-	ue := Lookup(upstreamStatus)
-	data := BuildSSEErrorData(ue)
-	fmt.Fprintf(w, "event: error\ndata: %s\n\n", data)
+	if containsCopilot(upstreamBody) {
+		ue := Lookup(upstreamStatus)
+		data := BuildSSEErrorData(ue)
+		fmt.Fprintf(w, "event: error\ndata: %s\n\n", data)
+	} else {
+		// Transparently forward the original upstream error as SSE event.
+		ue := Lookup(upstreamStatus)
+		ue.Message = string(upstreamBody)
+		data := BuildSSEErrorData(ue)
+		fmt.Fprintf(w, "event: error\ndata: %s\n\n", data)
+	}
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
 	}
+}
+
+// containsCopilot reports whether the body contains the word "Copilot"
+// (case-insensitive). When present, the response likely exposes internal
+// Copilot implementation details that should be sanitised before forwarding.
+func containsCopilot(body []byte) bool {
+	return bytes.Contains(bytes.ToLower(body), []byte("copilot"))
 }
 
 // logUpstreamError writes a structured log line with all available context.
