@@ -1,0 +1,13 @@
+services:
+  copilot-go:
+    image: ${DOCKER_IMAGE}
+    container_name: copilot-go
+    ports:
+      - "3180:3000"
+      - "4141:4141"
+    volumes:
+      - copilot-data:/root/.local/share/copilot-api
+    restart: unless-stopped
+
+volumes:
+  copilot-data:
